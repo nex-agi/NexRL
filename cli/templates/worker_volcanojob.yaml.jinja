@@ -1,0 +1,78 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}-workers
+  namespace: {{NAMESPACE}}
+  labels:
+    app: {{JOB_NAME}}-workers
+    job-type: nexrl-training-workers
+    reclaimableByVolcano: "{{RECLAIMABLE_BY_VOLCANO|default('true')}}"
+spec:
+  minAvailable: {{MIN_AVAILABLE|default(WORLD_SIZE)}}
+  schedulerName: volcano
+  priorityClassName: {{PRIORITY_CLASS_NAME|default('high-priority-job')}}
+  queue: {{QUEUE|default('default')}}
+  maxRetry: 3
+  plugins:
+    env: []
+    ssh: []
+    svc: []
+  policies:
+  - action: RestartJob
+    events:
+    - PodEvicted
+    - PodFailed
+  tasks:
+  - name: worker
+    replicas: {{WORLD_SIZE}}
+    minAvailable: {{MIN_AVAILABLE|default(WORLD_SIZE)}}
+    template:
+      metadata:
+        labels:
+          app: {{JOB_NAME}}-workers
+          job-type: nexrl-training-workers
+      spec:
+        restartPolicy: OnFailure
+        containers:
+        - name: worker
+          image: {{WORKER_IMAGE}}
+          imagePullPolicy: IfNotPresent
+          command:
+          - /bin/bash
+          - -c
+          - |
+            torchrun \
+              --nproc_per_node={{GPUS_PER_POD}} \
+              --standalone \
+              -m nexrl.trainer.distributed.worker_process \
+              --api-server-url={{TRAIN_ROUTER_URL}} \
+              --identifier={{IDENTIFIER}} \
+              --dispatch-mode scatter
+          env:
+          - name: NCCL_DEBUG
+            value: "INFO"
+          - name: NCCL_IB_DISABLE
+            value: "0"
+          - name: PYTHONPATH
+            value: "/app:$PYTHONPATH"
+          resources:
+            requests:
+              nvidia.com/gpu: "{{GPUS_PER_POD}}"
+              memory: "{{WORKER_MEMORY|default('200Gi')}}"
+            limits:
+              nvidia.com/gpu: "{{GPUS_PER_POD}}"
+              memory: "{{WORKER_MEMORY|default('200Gi')}}"
+          volumeMounts:
+          - name: shared-storage
+            mountPath: {{STORAGE_PATH}}
+          - name: dshm
+            mountPath: /dev/shm
+        volumes:
+        - name: shared-storage
+          hostPath:
+            path: {{STORAGE_PATH}}
+            type: Directory
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "32Gi"

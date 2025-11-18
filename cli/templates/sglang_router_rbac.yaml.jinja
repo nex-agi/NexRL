@@ -1,0 +1,31 @@
+# ServiceAccount and RBAC for SGLang Router
+# Allows router to discover pods via K8s API
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sglang-router
+  namespace: {{NAMESPACE}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sglang-router-pod-access
+  namespace: {{NAMESPACE}}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sglang-router-pod-access-binding
+  namespace: {{NAMESPACE}}
+subjects:
+- kind: ServiceAccount
+  name: sglang-router
+  namespace: {{NAMESPACE}}
+roleRef:
+  kind: Role
+  name: sglang-router-pod-access
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,88 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{JOB_NAME}}-controller
+  namespace: {{NAMESPACE}}
+  labels:
+    app: {{JOB_NAME}}-controller
+    job-type: nexrl-controller
+    reclaimableByVolcano: "{{RECLAIMABLE_BY_VOLCANO|default('true')}}"
+spec:
+  minAvailable: 1
+  schedulerName: volcano
+  priorityClassName: {{PRIORITY_CLASS_NAME|default('high-priority-job')}}
+  queue: {{QUEUE|default('default')}}
+  maxRetry: 1
+  plugins:
+    env: []
+  policies:
+  - action: CompleteJob
+    events:
+    - TaskCompleted
+  tasks:
+  - name: controller
+    replicas: 1
+    minAvailable: 1
+    template:
+      metadata:
+        labels:
+          app: {{JOB_NAME}}-controller
+          job-type: nexrl-controller
+      spec:
+        restartPolicy: Never
+        containers:
+        - name: controller
+          image: {{CONTROLLER_IMAGE}}
+          imagePullPolicy: IfNotPresent
+          command:
+          - /bin/bash
+          - -c
+          - |
+            python -m nexrl.main --config-name='rl_train' \
+              {{NEXRL_PARAMS}}
+          env:
+          - name: PYTHONPATH
+            value: "/app:$PYTHONPATH"
+          - name: TRAIN_ROUTER_URL
+            valueFrom:
+              configMapKeyRef:
+                name: nexrl-routers-config
+                key: train_router_url
+          - name: ROLLOUT_ROUTER_URL
+            valueFrom:
+              configMapKeyRef:
+                name: nexrl-routers-config
+                key: rollout_router_url
+          - name: IDENTIFIER
+            value: "{{IDENTIFIER}}"
+          - name: USER_ID
+            value: "{{USER_ID}}"
+          - name: WANDB_KEY
+            valueFrom:
+              secretKeyRef:
+                name: nexrl-wandb-{{USER_ID}}
+                key: api_key
+          - name: WANDB_HOST
+            valueFrom:
+              secretKeyRef:
+                name: nexrl-wandb-{{USER_ID}}
+                key: host
+          resources:
+            requests:
+              memory: "{{CONTROLLER_MEMORY|default('320Gi')}}"
+            limits:
+              memory: "{{CONTROLLER_MEMORY|default('320Gi')}}"
+          volumeMounts:
+          - name: shared-storage
+            mountPath: {{STORAGE_PATH}}
+          - name: job-config
+            mountPath: /app/job_config
+        volumes:
+        - name: shared-storage
+          hostPath:
+            path: {{STORAGE_PATH}}
+            type: Directory
+        - name: job-config
+          hostPath:
+            path: {{JOB_CONFIG_PATH}}
+            type: Directory

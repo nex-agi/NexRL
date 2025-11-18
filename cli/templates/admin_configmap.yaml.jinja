@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexrl-admin-settings
+  namespace: {{NAMESPACE}}
+  labels:
+    component: nexrl-infrastructure
+data:
+  namespace: "{{NAMESPACE}}"
+  storage_type: "{{STORAGE_TYPE|default('hostPath')}}"
+  storage_path: "{{STORAGE_PATH}}"
+  train_router_image: "{{TRAIN_ROUTER_IMAGE}}"
+  worker_image: "{{WORKER_IMAGE}}"
+  controller_image: "{{CONTROLLER_IMAGE}}"
+  inference_image: "{{INFERENCE_IMAGE}}"
+  rollout_router_image: "{{ROLLOUT_ROUTER_IMAGE}}"
+  default_queue: "{{DEFAULT_QUEUE|default('default')}}"
+  default_priority_class: "{{DEFAULT_PRIORITY_CLASS|default('high-priority-job')}}"
+  registry: "{{REGISTRY}}"

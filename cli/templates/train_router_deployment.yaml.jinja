@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: train-router
+  namespace: {{NAMESPACE}}
+  labels:
+    app: train-router
+    component: nexrl-infrastructure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: train-router
+  template:
+    metadata:
+      labels:
+        app: train-router
+        component: nexrl-infrastructure
+    spec:
+      containers:
+      - name: train-router
+        image: {{TRAIN_ROUTER_IMAGE}}
+        imagePullPolicy: IfNotPresent
+        command: ["python", "-m", "nexrl.trainer.api.api_server"]
+        args: ["--host", "0.0.0.0", "--port", "8000"]
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        env:
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_PORT
+        - name: REDIS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_USERNAME
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_PASSWORD
+        resources:
+          requests:
+            memory: "{{TRAIN_ROUTER_MEMORY|default('300Gi')}}"
+          limits:
+            memory: "{{TRAIN_ROUTER_MEMORY|default('300Gi')}}"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      restartPolicy: Always

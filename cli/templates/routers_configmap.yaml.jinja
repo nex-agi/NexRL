@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexrl-routers-config
+  namespace: {{NAMESPACE}}
+  labels:
+    component: nexrl-infrastructure
+data:
+  train_router_url: "http://train-router-svc.{{NAMESPACE}}.svc.cluster.local:8000"
+  rollout_router_url: "http://rollout-router-svc.{{NAMESPACE}}.svc.cluster.local:12345"
+  namespace: "{{NAMESPACE}}"

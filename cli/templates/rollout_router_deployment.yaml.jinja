@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollout-router
+  namespace: {{NAMESPACE}}
+  labels:
+    app: rollout-router
+    component: nexrl-infrastructure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rollout-router
+  template:
+    metadata:
+      labels:
+        app: rollout-router
+        component: nexrl-infrastructure
+    spec:
+      serviceAccountName: sglang-router
+      containers:
+      - name: rollout-router
+        image: {{ROLLOUT_ROUTER_IMAGE|default('lmsysorg/sglang:latest')}}
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - sglang_router.launch_router
+        - --port
+        - "12345"
+        - --host
+        - "0.0.0.0"
+        - --service-discovery
+        - --enable-igw
+        - --selector
+        - app=nexrl-rollout-sglang
+        - --service-discovery-namespace
+        - {{NAMESPACE}}
+        - --service-discovery-port
+        - "8000"
+        ports:
+        - containerPort: 12345
+          name: http
+          protocol: TCP
+        env:
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_PORT
+        - name: REDIS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_USERNAME
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_PASSWORD
+        resources:
+          requests:
+            cpu: "{{ROLLOUT_ROUTER_CPU|default('8')}}"
+            memory: "{{ROLLOUT_ROUTER_MEMORY|default('16Gi')}}"
+          limits:
+            cpu: "{{ROLLOUT_ROUTER_CPU|default('8')}}"
+            memory: "{{ROLLOUT_ROUTER_MEMORY|default('16Gi')}}"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 12345
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 12345
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      restartPolicy: Always

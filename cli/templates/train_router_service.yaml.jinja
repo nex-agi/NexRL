@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: train-router-svc
+  namespace: {{NAMESPACE}}
+  labels:
+    app: train-router
+    component: nexrl-infrastructure
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5555
+    targetPort: 5555
+    protocol: TCP
+    name: zmq-pub
+  - port: 5556
+    targetPort: 5556
+    protocol: TCP
+    name: zmq-pull
+  - port: 5557
+    targetPort: 5557
+    protocol: TCP
+    name: zmq-push-0
+  - port: 5558
+    targetPort: 5558
+    protocol: TCP
+    name: zmq-push-1
+  - port: 5559
+    targetPort: 5559
+    protocol: TCP
+    name: zmq-push-2
+  - port: 5560
+    targetPort: 5560
+    protocol: TCP
+    name: zmq-push-3
+  - port: 5561
+    targetPort: 5561
+    protocol: TCP
+    name: zmq-push-4
+  - port: 5562
+    targetPort: 5562
+    protocol: TCP
+    name: zmq-push-5
+  - port: 5563
+    targetPort: 5563
+    protocol: TCP
+    name: zmq-push-6
+  - port: 5564
+    targetPort: 5564
+    protocol: TCP
+    name: zmq-push-7
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: train-router

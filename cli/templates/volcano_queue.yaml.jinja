@@ -1,0 +1,17 @@
+apiVersion: scheduling.volcano.sh/v1beta1
+kind: Queue
+metadata:
+  name: {{ QUEUE_NAME }}
+spec:
+  weight: {{ WEIGHT }}
+  {% if CAPABILITY %}
+  capability:
+    cpu: "{{ CAPABILITY.cpu }}"
+    memory: "{{ CAPABILITY.memory }}"
+    {% if CAPABILITY.gpu %}
+    nvidia.com/gpu: "{{ CAPABILITY.gpu }}"
+    {% endif %}
+  {% endif %}
+  {% if RECLAIMABLE is defined %}
+  reclaimable: {{ RECLAIMABLE | lower }}
+  {% endif %}

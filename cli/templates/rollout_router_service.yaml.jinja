@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rollout-router-svc
+  namespace: {{NAMESPACE}}
+  labels:
+    app: rollout-router
+    component: nexrl-infrastructure
+spec:
+  type: ClusterIP
+  ports:
+  - port: 12345
+    targetPort: 12345
+    protocol: TCP
+    name: http
+  selector:
+    app: rollout-router
