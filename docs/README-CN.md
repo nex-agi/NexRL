@@ -72,7 +72,7 @@ nexrl -m training-service \
   --run-nexrl
 ```
 
-使用公共镜像（`ghcr.io/nex-agi/nexrl-open-source:v1.0.1`、`lmsysorg/sglang:v0.5.4.post2`）和 `/tmp` 存储 - 非常适合测试！
+使用公共镜像（`nexagi/nexrl:v1.0.0`、`lmsysorg/sglang:v0.5.4.post2`）和 `/tmp` 存储 - 非常适合测试！
 
 **开发环境配置**
 
@@ -122,8 +122,8 @@ nexrl -m self-hosted \
 
 **关键变量：**
 - `NEXRL_STORAGE_PATH`：存储路径（默认：`/tmp/nexrl`）
-- `NEXRL_WORKER_IMAGE`：Worker 镜像（默认：`ghcr.io/nex-agi/nexrl-open-source:v1.0.1`）
-- `NEXRL_CONTROLLER_IMAGE`：Controller 镜像（默认：`ghcr.io/nex-agi/nexrl-open-source:v1.0.1`）
+- `NEXRL_WORKER_IMAGE`：Worker 镜像（默认：`nexagi/nexrl:v1.0.0`）
+- `NEXRL_CONTROLLER_IMAGE`：Controller 镜像（默认：`nexagi/nexrl:v1.0.0`）
 - `NEXRL_INFERENCE_IMAGE`：推理镜像（默认：`lmsysorg/sglang:v0.5.4.post2`）
 - `WANDB_KEY`：WandB API 密钥（可选）
 

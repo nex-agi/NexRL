@@ -58,8 +58,8 @@ export WANDB_KEY="your-key"
 | Variable | Default |
 |----------|---------|
 | `NEXRL_STORAGE_PATH` | `/tmp/nexrl` |
-| `NEXRL_WORKER_IMAGE` | `ghcr.io/nex-agi/nexrl-open-source:v1.0.1` |
-| `NEXRL_CONTROLLER_IMAGE` | `ghcr.io/nex-agi/nexrl-open-source:v1.0.1` |
+| `NEXRL_WORKER_IMAGE` | `nexagi/nexrl:v1.0.0` |
+| `NEXRL_CONTROLLER_IMAGE` | `nexagi/nexrl:v1.0.0` |
 | `NEXRL_INFERENCE_IMAGE` | `lmsysorg/sglang:v0.5.4.post2` |
 | `NEXRL_QUEUE` | `default` |
 | `NEXRL_USER_ID` | `$USER` |
