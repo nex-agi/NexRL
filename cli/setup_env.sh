@@ -28,8 +28,8 @@ export NEXRL_SERVICE_ACCOUNT="default"
 # ============================================================
 
 # Controller/Worker image (NexRL driver and agents)
-export NEXRL_CONTROLLER_IMAGE="ghcr.io/nex-agi/nexrl-open-source:v1.0.1"
-export NEXRL_WORKER_IMAGE="ghcr.io/nex-agi/nexrl-open-source:v1.0.1"
+export NEXRL_CONTROLLER_IMAGE="nexagi/nexrl:v1.0.0"
+export NEXRL_WORKER_IMAGE="nexagi/nexrl:v1.0.0"
 
 # Inference image (SGLang)
 export NEXRL_INFERENCE_IMAGE="lmsysorg/sglang:v0.5.4.post2"
