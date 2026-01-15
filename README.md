@@ -1,8 +1,13 @@
-[中文](docs/README-CN.md) ｜ English
+[中文](docs/README-CN.md) | English | [Blog](https://dawning-road.github.io/blog/nexrl)
 
 # NexRL
 
 NexRL is a production-ready, distributed LLM post-training framework defined by its ultra-loosely-coupled philosophy. Its service-oriented architecture provides maximum flexibility and extensibility while maintaining clean abstractions and ease of use.
+
+## News 🚀
+
+- **[2026.01.15] NexRL v1.0.0 is here!** Train [NexAU](https://github.com/nex-agi/nexau) agents with **zero code modification**—just configs and evaluators. New training-service mode supports [Weaver](https://weaver.nex-agi.com/) and [Tinker](https://thinkingmachines.ai/tinker/) APIs for effortless cloud training.
+- **[2025.11.18]** NexRL goes open-source! Pre-release version now available.
 
 ## Key Features
 
@@ -12,6 +17,7 @@ NexRL is a production-ready, distributed LLM post-training framework defined by 
 - **Intelligent Resource Management**: Configurable placement and co-location of services for optimal performance in distributed environments
 - **Comprehensive Monitoring**: Built-in activity tracking and health checking system for production deployments
 - **Robust Error Handling**: Centralized error reporting and recovery mechanisms for production reliability
+
 
 ## Architecture
 
@@ -131,6 +137,7 @@ nexrl -m self-hosted \
 
 ## Documentation
 
+- **[User Guide](docs/user-guide.md)**: Complete guide for developing and integrating RL algorithms. Train NexAU agents with zero code modification—just provide configuration files and task-specific evaluators.
 - **[Developer Guide](docs/developer-guide.md)**: Comprehensive documentation on architecture, APIs, and advanced usage
 - **[Configuration Examples](recipe/)**: Ready-to-use training recipes for various models and tasks
 - **[Test Suite](tests/README.md)**: Testing guide and examples
@@ -142,11 +149,9 @@ This release represents a foundational version of NexRL, designed to demonstrate
 - More model & agent support
 - Additional trainging and inference backend ntegrations
 - High-performance weight synchronization
-- Advanced agent training support with [NexAU](https://github.com/nex-agi/nexau)
 - Post-training algorithm exploration
 - More usability tools
 - ...
-
 
 ## License
 
