@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+import os
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -40,6 +41,26 @@ def main_task(config: DictConfig):
 def main(config: DictConfig):
     """Main entry point supporting both local and Ray launch modes"""
     set_logging_basic_config()
+
+    # 1. Try TRAIN_CONFIG environment variable (most reliable, set by launch scripts)
+    try:
+        config_file_path = os.environ["TRAIN_CONFIG"]
+        logger.info(f"Using config file path from TRAIN_CONFIG: {config_file_path}")
+    # Fail hard if we couldn't determine the config file path
+    except Exception as exc:
+        raise RuntimeError(
+            "Cannot determine config file path. "
+            "Ensure TRAIN_CONFIG environment variable is set or run via Hydra."
+        ) from exc
+
+    if not os.path.exists(config_file_path):
+        raise FileNotFoundError(f"Config file not found: {config_file_path}")
+
+    # Store in config for downstream use
+    # Temporarily disable struct mode to allow adding new attribute
+    OmegaConf.set_struct(config, False)
+    config._config_file_path = config_file_path  # pylint: disable=protected-access
+    OmegaConf.set_struct(config, True)
     logger.info(f"Starting NexRL in {config.launch_mode} mode")
 
     validate_config(config)
@@ -59,7 +80,8 @@ def main(config: DictConfig):
             f"Unsupported launch mode: {config.launch_mode}. Supported modes: 'local', 'ray'"
         )
     logger.info("NexRL training completed")
+    logger.info(f"Experiment log path: {os.environ.get('EXPERIMENT_PATH', 'not found')}")
 
 
 if __name__ == "__main__":
-    main()
+    main()  # pylint: disable=no-value-for-parameter

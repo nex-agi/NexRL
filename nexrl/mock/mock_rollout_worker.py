@@ -25,8 +25,9 @@ from typing import Any
 from omegaconf import DictConfig
 
 from ..base_module import NexRLModule
+from ..nexrl_types import Trajectory
 from ..rollout_worker.base_rollout_worker import BaseRolloutWorker
-from .mock_llm_service_client import MockLLMServiceClient
+from .mock_inference_service_client import MockInferenceServiceClient
 
 logger = logging.getLogger(__name__)
 
@@ -34,21 +35,21 @@ logger = logging.getLogger(__name__)
 class MockRolloutWorker(BaseRolloutWorker):
     """
     Mock Rollout Worker for testing purposes.
-    Uses MockLLMServiceClient instead of real LLM service to avoid network dependencies.
+    Uses MockInferenceServiceClient instead of real inference service to avoid network dependencies.
     """
 
-    def __init__(self, config: DictConfig):
+    def __init__(self, config: DictConfig):  # pylint: disable=super-init-not-called
         # Initialize NexRLModule (grandparent)
-        NexRLModule.__init__(self)
+        NexRLModule.__init__(self)  # pylint: disable=non-parent-init-called
 
         # Initialize attributes from BaseRolloutWorker without calling its __init__
-        # to avoid creating a real LLMServiceClient
+        # to avoid creating a real inference service client
         self._config = config
         self._stop_event = threading.Event()
         self._thread: threading.Thread = None  # type: ignore
 
-        # Use MockLLMServiceClient instead of real client
-        self._llm_client = MockLLMServiceClient(config)
+        # Use MockInferenceServiceClient instead of real client
+        self._inference_client: MockInferenceServiceClient = MockInferenceServiceClient(config)  # type: ignore
 
         # Initialize other attributes that would be set by BaseRolloutWorker
         self._trajectory_pool = None  # type: ignore
@@ -63,9 +64,9 @@ class MockRolloutWorker(BaseRolloutWorker):
         self._processed_count: int = 0
         self._mock_delay: float = 0.1
 
-        logger.info("MockRolloutWorker initialized with MockLLMServiceClient")
+        logger.info("MockRolloutWorker initialized with MockInferenceServiceClient")
 
-    def step(self, task: dict[str, Any]) -> None:
+    def rollout(self, task: dict[str, Any]) -> None:
         """
         Mock implementation of a single step operation.
 
@@ -75,14 +76,26 @@ class MockRolloutWorker(BaseRolloutWorker):
         # Simulate processing time
         time.sleep(self._mock_delay)
 
-        # Generate mock rollout result
-        mock_result = {
-            "prompt": task["prompt"],
-            "response": f"Mock response {self._processed_count}",
-            "reward": random.uniform(0.0, 1.0),
-        }
+        # Generate mock tokens and loss_mask (simple mock: 10 prompt tokens, 5 response tokens)
+        prompt_tokens = list(range(100, 110))
+        response_tokens = list(range(200, 205))
+        tokens = prompt_tokens + response_tokens
+        loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
+
+        # Create Trajectory dataclass
+        mock_trajectory = Trajectory(
+            tokens=tokens,
+            loss_mask=loss_mask,
+            reward=random.uniform(0.0, 1.0),
+            is_val=task.get("is_val", False),
+            extra_fields={
+                "prompt": task["prompt"],
+                "response": f"Mock response {self._processed_count}",
+                "logprobs": [0.0] * len(tokens),
+            },
+        )
 
         self._processed_count += 1
         logger.info(f"Mock rollout worker: Successfully processed step #{self._processed_count}")
 
-        self._put_trajectory(mock_result)
+        self._put_trajectory(mock_trajectory)

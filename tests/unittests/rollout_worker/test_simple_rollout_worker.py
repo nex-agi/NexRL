@@ -13,35 +13,33 @@
 # limitations under the License.
 
 """
-Tests for SimpleRolloutWorker using real implementation with mocked LLM client
+Tests for SimpleRolloutWorker using real implementation with mocked inference client
 """
-
-from unittest.mock import patch
 
 import pytest
 
-from nexrl.mock import MockLLMServiceClient
+from nexrl.mock import MockInferenceServiceClient
 from nexrl.rollout_worker import SimpleRolloutWorker
 
 
 @pytest.fixture
 def simple_rollout_worker(rollout_worker_config):
-    """Create SimpleRolloutWorker with MockLLMServiceClient"""
-    # Patch LLMServiceClient to return MockLLMServiceClient instead
-    with patch("nexrl.rollout_worker.base_rollout_worker.LLMServiceClient", MockLLMServiceClient):
-        worker = SimpleRolloutWorker(rollout_worker_config)
+    """Create SimpleRolloutWorker with MockInferenceServiceClient"""
+    worker = SimpleRolloutWorker(rollout_worker_config)
+    # Manually set the inference client for testing
+    worker._inference_client = MockInferenceServiceClient(rollout_worker_config)
     return worker
 
 
 def test_simple_rollout_worker_initialization(simple_rollout_worker):
     """Test SimpleRolloutWorker initialization"""
     assert simple_rollout_worker._config is not None
-    assert simple_rollout_worker._llm_client is not None
-    assert isinstance(simple_rollout_worker._llm_client, MockLLMServiceClient)
+    assert simple_rollout_worker._inference_client is not None
+    assert isinstance(simple_rollout_worker._inference_client, MockInferenceServiceClient)
 
 
-def test_simple_rollout_worker_step(simple_rollout_worker):
-    """Test SimpleRolloutWorker step method"""
+def test_simple_rollout_worker_rollout(simple_rollout_worker):
+    """Test SimpleRolloutWorker rollout method"""
     # Mock the _put_trajectory method to capture trajectories
     trajectories = []
 
@@ -51,9 +49,9 @@ def test_simple_rollout_worker_step(simple_rollout_worker):
 
     simple_rollout_worker._put_trajectory = mock_put_trajectory
 
-    # Execute a step
+    # Execute a rollout
     task = {"prompt": "What is 2+2?", "id": 1}
-    result = simple_rollout_worker.step(task)
+    result = simple_rollout_worker.rollout(task)
 
     # Should have processed the task
     assert result == "trajectory_id_123"
@@ -68,28 +66,28 @@ def test_simple_rollout_worker_step(simple_rollout_worker):
     assert "Mock response" in traj["response"]
 
 
-def test_simple_rollout_worker_step_missing_prompt(simple_rollout_worker):
-    """Test SimpleRolloutWorker step with missing prompt"""
+def test_simple_rollout_worker_rollout_missing_prompt(simple_rollout_worker):
+    """Test SimpleRolloutWorker rollout with missing prompt"""
     # Mock the _put_trajectory method
     simple_rollout_worker._put_trajectory = lambda x: "id"
 
-    # Execute a step without prompt
+    # Execute a rollout without prompt
     task = {"id": 1}
-    result = simple_rollout_worker.step(task)
+    result = simple_rollout_worker.rollout(task)
 
     # Should return None when prompt is missing
     assert result is None
 
 
-def test_simple_rollout_worker_llm_integration(simple_rollout_worker):
-    """Test that SimpleRolloutWorker correctly uses LLM client"""
+def test_simple_rollout_worker_inference_integration(simple_rollout_worker):
+    """Test that SimpleRolloutWorker correctly uses inference client"""
     # Mock the _put_trajectory method to capture trajectories
     trajectories = []
     simple_rollout_worker._put_trajectory = lambda x: trajectories.append(x) or "id"
 
-    # Execute a step
+    # Execute a rollout
     task = {"prompt": "Test prompt", "id": 1, "extra_field": "extra_value"}
-    simple_rollout_worker.step(task)
+    simple_rollout_worker.rollout(task)
 
     # Check that extra fields from task are included in trajectory
     traj = trajectories[0]

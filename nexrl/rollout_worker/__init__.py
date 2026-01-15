@@ -17,11 +17,30 @@ Rollout Worker module for NexRL framework
 """
 
 from .agent_rollout_worker import AgentRolloutWorker
+from .base_nexau_rollout_worker import (
+    BaseEvaluationTarget,
+    BaseNexAURolloutWorker,
+    EvaluationRunResult,
+    Evaluator,
+    NexAUEvaluationTarget,
+)
 from .base_rollout_worker import BaseRolloutWorker
+from .pig_latin_rollout_worker import PigLatinRolloutWorker
 from .simple_rollout_worker import SimpleRolloutWorker
+
+# Alias for backward compatibility
+DefaultNexAURolloutWorker = BaseNexAURolloutWorker
 
 __all__ = [
     "BaseRolloutWorker",
     "AgentRolloutWorker",
     "SimpleRolloutWorker",
+    "PigLatinRolloutWorker",
+    "BaseNexAURolloutWorker",
+    "DefaultNexAURolloutWorker",
+    # Evaluator classes (now part of NexAU rollout worker)
+    "BaseEvaluationTarget",
+    "EvaluationRunResult",
+    "Evaluator",
+    "NexAUEvaluationTarget",
 ]

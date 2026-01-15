@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """
 A unified tracking interface that supports logging data to different backend
 """
@@ -23,9 +22,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
-import wandb.wandb_run
-
-from .git import capture_git_change
+from .git import capture_git_change  # pylint: disable=relative-beyond-top-level
+from .logger.feishu_logger import LarkReporter
 
 
 class LoggerProtocol(Protocol):
@@ -36,7 +34,7 @@ class LoggerProtocol(Protocol):
     def finish(self, exit_code: int = 0) -> None: ...
 
 
-class Tracking(object):
+class Tracking:
     supported_backend = ["wandb", "mlflow", "swanlab", "console"]
 
     def __init__(
@@ -60,17 +58,23 @@ class Tracking(object):
 
         self.logger: dict[str, LoggerProtocol] = {}
         self.wandb_url = ""
+        self.feishu_logger: LarkReporter | None = None
+        if config["logger"].get("enable_feishu_logging", False):
+            self.feishu_logger = LarkReporter(
+                url=config["logger"]["feishu_url"],
+                user_name=os.environ.get("NEXRL_USER", os.environ.get("USER", "")),
+            )
 
         if "tracking" in default_backend or "wandb" in default_backend:
-            from wandb.wandb_run import Run
-
             import wandb
 
-            wandb.login(host=os.environ["WANDB_HOST"], key=os.environ["WANDB_KEY"])  # type: ignore[attr-defined]
+            wandb.login(host=os.environ["WANDB_HOST"], key=os.environ["WANDB_KEY"])  # type: ignore[attr-defined]  # pylint: disable=c-extension-no-member
+            # Temporarily disable struct mode to add git info
             config["git"] = capture_git_change()
-            wandb_run: Run = wandb.init(project=project_name, name=experiment_name, config=config)  # type: ignore[attr-defined]
+            wandb_run = wandb.init(project=project_name, name=experiment_name, config=config)  # type: ignore[attr-defined]  # pylint: disable=c-extension-no-member
             self.logger["wandb"] = wandb  # type: ignore[assignment]
-            self.wandb_url = wandb_run.get_url()
+            # get_url may return None; fall back to empty string for consistency
+            self.wandb_url = wandb_run.get_url() or ""
 
         if "mlflow" in default_backend:
             import mlflow
@@ -133,7 +137,6 @@ class _MlflowLoggingAdapter:
 
     def finish(self, exit_code: int = 0) -> None:
         """Finish method for compatibility with LoggerProtocol."""
-        pass
 
 
 def _compute_mlflow_params_from_objects(params) -> dict[str, Any]:
@@ -172,4 +175,4 @@ def _flatten_dict(raw: dict[str, Any], *, sep: str) -> dict[str, Any]:
 
     ans = pd.json_normalize(raw, sep=sep).to_dict(orient="records")[0]
     assert isinstance(ans, dict)
-    return ans
+    return {str(k): v for k, v in ans.items()}

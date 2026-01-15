@@ -1,0 +1,177 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{name}}
+  namespace: {{namespace}}
+  annotations:
+    JobAlias: {{name}}
+    jobCreator: {{nexrl_user}}
+    scheduling.volcano.sh/queue-name: {{queue}}
+  labels:
+    reclaimableByVolcano: "{{reclaimableByVolcano}}"
+    volcano.sh/job-type: pytorch
+spec:
+  minAvailable: {{globalMinAvailable}}
+  ttlSecondsAfterFinished: 86400
+  schedulerName: volcano
+  priorityClassName: {{priorityClassName}}
+  plugins:
+    env: []
+    ssh: []
+    svc: []
+    pytorch: ["--master=master", "--port=23456"]
+  policies:
+    - action: RestartJob
+      events:
+      - PodEvicted
+      - PodFailed
+  queue: {{queue}}
+  tasks:
+    - replicas: 1
+      minAvailable: 1
+      name: master
+      policies:
+        - action: RestartJob
+          events:
+          - PodEvicted
+          - PodFailed
+      template:
+        spec:
+          serviceAccountName: {{serviceAccountName}}
+          containers:
+            - name: driver
+              image: {{image}}
+              imagePullPolicy: Always
+              command:
+                - /bin/bash
+                - -c
+                - {{cmd}}
+              env:
+                - name: TZ
+                  value: UTC-8
+                - name: USER
+                  value: {{nexrl_user}}
+                - name: ROLE
+                  value: "driver"
+                - name: WORLD_SIZE
+                  value: "{{ num_agent_workers + 1 }}"
+                - name: NEXRL_PATH
+                  value: {{nexrl_path}}
+                - name: KUBERNETES_CONTAINER_RESOURCE_GPU
+                  value: "0"
+                - name: SERVED_MODEL_NAME
+                  value: "{{served_model_name}}"
+                - name: TRAIN_CONFIG
+                  value: "{{train_config}}"
+                - name: EXPERIMENT_PATH
+                  value: "{{experiment_path}}"
+                {% if environment_setup_script %}
+                - name: ENVIRONMENT_SETUP_SCRIPT
+                  value: "{{environment_setup_script}}"
+                {% endif %}
+                - name: IS_AGENT_WORKER
+                  value: "false"
+                - name: NUM_AGENTS_PER_WORKER
+                  value: "{{num_agents_per_worker}}"
+                - name: NUM_AGENT_WORKERS
+                  value: "{{num_agent_workers}}"
+                # WandB credentials (optional, from environment variables)
+                {% if wandb_key %}
+                - name: WANDB_KEY
+                  value: "{{wandb_key}}"
+                {% endif %}
+                {% if wandb_host %}
+                - name: WANDB_HOST
+                  value: "{{wandb_host}}"
+                {% endif %}
+                # Training service API keys (optional, from environment variables)
+                {% if tinker_api_key %}
+                - name: TINKER_API_KEY
+                  value: "{{tinker_api_key}}"
+                {% endif %}
+                {% if tinker_base_url %}
+                - name: TINKER_BASE_URL
+                  value: "{{tinker_base_url}}"
+                {% endif %}
+                {% if weaver_api_key %}
+                - name: WEAVER_API_KEY
+                  value: "{{weaver_api_key}}"
+                {% endif %}
+                {% if weaver_base_url %}
+                - name: WEAVER_BASE_URL
+                  value: "{{weaver_base_url}}"
+                {% endif %}
+              workingDir: {{nexrl_path}}
+              resources:
+                limits:
+                  cpu: "32"
+                  memory: 128Gi
+                requests:
+                  cpu: "16"
+                  memory: 128Gi
+              volumeMounts:
+                - mountPath: {{storage_path}}
+                  name: storage-volume
+          volumes:
+            - name: storage-volume
+              hostPath:
+                path: {{storage_path}}
+                type: DirectoryOrCreate
+          restartPolicy: Never
+    {% if num_agent_workers > 0 %}
+    - replicas: {{num_agent_workers}}
+      minAvailable: {{num_agent_workers}}
+      name: agent
+      policies:
+        - action: RestartJob
+          events:
+          - PodEvicted
+          - PodFailed
+      template:
+        spec:
+          serviceAccountName: {{serviceAccountName}}
+          containers:
+            - name: agent
+              image: {{image}}
+              imagePullPolicy: Always
+              command:
+                - /bin/bash
+                - -c
+                - cli/common/ray_setup.sh
+              env:
+                - name: TZ
+                  value: UTC-8
+                - name: USER
+                  value: {{nexrl_user}}
+                - name: ROLE
+                  value: "agent"
+                - name: WORLD_SIZE
+                  value: "{{ num_agent_workers + 1 }}"
+                - name: NEXRL_PATH
+                  value: {{nexrl_path}}
+                - name: KUBERNETES_CONTAINER_RESOURCE_GPU
+                  value: "0"
+                - name: EXPERIMENT_PATH
+                  value: "{{experiment_path}}"
+                - name: IS_AGENT_WORKER
+                  value: "true"
+                - name: NUM_AGENTS_PER_WORKER
+                  value: "{{num_agents_per_worker}}"
+              workingDir: {{nexrl_path}}
+              resources:
+                limits:
+                  cpu: "32"
+                  memory: 128Gi
+                requests:
+                  cpu: "16"
+                  memory: 128Gi
+              volumeMounts:
+                - mountPath: {{storage_path}}
+                  name: storage-volume
+          volumes:
+            - name: storage-volume
+              hostPath:
+                path: {{storage_path}}
+                type: DirectoryOrCreate
+          restartPolicy: Never
+    {% endif %}

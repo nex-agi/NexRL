@@ -1,0 +1,95 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{name}}
+  namespace: {{namespace}}
+  annotations:
+    JobAlias: {{name}}
+    jobCreator: {{nexrl_user}}
+    scheduling.volcano.sh/queue-name: {{queue}}
+  labels:
+    reclaimableByVolcano: "{{reclaimableByVolcano}}"
+    volcano.sh/job-type: pytorch
+spec:
+  minAvailable: {{globalMinAvailable}}
+  ttlSecondsAfterFinished: 86400
+  schedulerName: volcano
+  priorityClassName: {{priorityClassName}}
+  plugins:
+    env: []
+    ssh: []
+    pytorch: ["--master=master", "--port=23456"]
+  policies:
+    - action: RestartJob
+      events:
+      - PodEvicted
+      - PodFailed
+  queue: {{queue}}
+  tasks:
+    - replicas: {{replicas}}
+      minAvailable: {{minAvailable}}
+      name: master
+      policies:
+        - action: RestartJob
+          events:
+          - PodEvicted
+          - PodFailed
+      template:
+        spec:
+          containers:
+            - name: worker
+              image: {{image}}
+              imagePullPolicy: Always
+              command:
+                - /bin/bash
+                - -c
+                - cli/self_hosted/run_gpu_worker.sh
+              env:
+                - name: TZ
+                  value: UTC-8
+                - name: USER
+                  value: {{nexrl_user}}
+                - name: NEXRL_PATH
+                  value: {{nexrl_path}}
+                - name: EXPERIMENT_PATH
+                  value: "{{experiment_path}}"
+                - name: KUBERNETES_CONTAINER_RESOURCE_GPU
+                  value: "8"
+                - name: NCCL_DEBUG
+                  value: "INFO"
+                - name: CUDA_DEVICE_MAX_CONNECTIONS
+                  value: "1"
+                - name: IDENTIFIER
+                  value: "{{identifier}}"
+                - name: API_SERVER_URL
+                  value: "{{api_server_url}}"
+              workingDir: {{nexrl_path}}
+              resources:
+                limits:
+                  memory: "1000Gi"
+                  nvidia.com/gpu: "8"
+                requests:
+                  memory: "800Gi"
+                  nvidia.com/gpu: "8"
+              volumeMounts:
+                - mountPath: /dev/shm
+                  name: dshm
+                - mountPath: {{storage_path}}
+                  name: storage-volume
+              securityContext:
+                capabilities:
+                  add:
+                    - IPC_LOCK
+          volumes:
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: "100Gi"
+            - name: storage-volume
+              hostPath:
+                path: {{storage_path}}
+                type: DirectoryOrCreate
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 0

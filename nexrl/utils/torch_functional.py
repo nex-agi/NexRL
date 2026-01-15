@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import torch
 import torch.nn.functional as F
 
@@ -50,6 +49,8 @@ def padding_data(input_ids, max_length, pad_token_id, left_pad=False, truncation
             input_ids = input_ids[:, :max_length]
         elif truncation == "error":
             raise NotImplementedError(f"{sequence_length=} is larger than {max_length=}")
+        elif truncation == "ignore":
+            pass
         else:
             raise NotImplementedError(f"Unknown truncation method {truncation}")
 

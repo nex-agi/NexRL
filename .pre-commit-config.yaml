@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Pre-commit hook. See documentation at: https://pre-commit.com/
-
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:
       - id: check-added-large-files
       - id: check-yaml
+        args: [--allow-multiple-documents]
       - id: end-of-file-fixer
       - id: trailing-whitespace
   - repo: https://github.com/psf/black-pre-commit-mirror
@@ -28,34 +27,49 @@ repos:
       - id: black
         language_version: python3.12
   - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+    rev: 6.0.0
     hooks:
       - id: isort
         name: isort (python)
   - repo: local
     hooks:
+      - id: fix-license-header
+        name: Fix License Header
+        entry: python tests/lint/fix_license_header.py
+        language: system
+        types_or: [python, shell, yaml, toml]
+        pass_filenames: true
       - id: check-license-header
         name: Check License Header
         entry: python tests/lint/check_license_header.py
         language: system
         types_or: [python, shell, yaml, toml]
         pass_filenames: true
+  - repo: https://github.com/pycqa/pylint
+    rev: v3.3.2
+    hooks:
       - id: pylint
-        name: pylint
-        entry: pylint
-        language: system
-        files: ^python/
+        name: pylint (non-test files)
         types: [python]
-        require_serial: true
+        exclude: ^tests/
         args: [
             "-rn", # Only display messages
             "-sn", # Don't display the score
           ]
+      # - id: pylint
+      #   name: pylint (test files)
+      #   types: [python]
+      #   files: ^tests/
+      #   args: [
+      #       "-rn", # Only display messages
+      #       "-sn", # Don't display the score
+      #       "--rcfile=tests/.pylintrc",
+      #     ]
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.16.0
     hooks:
       - id: mypy
-        exclude: "tests"
+        exclude: "^(tests|recipe)/"
         additional_dependencies:
           [
             "types-requests",

@@ -26,8 +26,8 @@ def test_mock_rollout_worker_initialization(rollout_worker_config):
     assert worker._mock_delay == 0.1
 
 
-def test_mock_rollout_worker_step(rollout_worker_config):
-    """Test MockRolloutWorker step method"""
+def test_mock_rollout_worker_rollout(rollout_worker_config):
+    """Test MockRolloutWorker rollout method"""
     worker = MockRolloutWorker(rollout_worker_config)
 
     # Mock the _put_trajectory method to avoid errors
@@ -38,9 +38,9 @@ def test_mock_rollout_worker_step(rollout_worker_config):
 
     worker._put_trajectory = mock_put_trajectory
 
-    # Execute a step
+    # Execute a rollout
     task = {"prompt": "test prompt"}
-    worker.step(task)
+    worker.rollout(task)
 
     assert worker._processed_count == 1
     assert len(trajectories) == 1

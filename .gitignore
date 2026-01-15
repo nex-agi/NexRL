@@ -215,5 +215,30 @@ logs/
 
 tmp_yaml/
 tmp_scripts/
+tmp*
 
 wandb/
+data/
+database/
+
+# Tool cache
+.tool_cache/
+
+# ============================================================================
+# NexRL Specific
+# ============================================================================
+
+# Environment files with sensitive information
+.env
+.env.local
+.env.production
+*.env.sh.local
+
+# Private recipe configurations (use NexRL-recipes repo instead)
+recipe/private/
+recipe/*_internal.yaml
+
+# Experiment outputs
+experiments/
+checkpoints/
+sync_weight/

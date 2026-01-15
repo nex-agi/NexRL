@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import os
 
 
 def _find_git_root():
     """Find the git root directory"""
-    import os
-
     # Start from the current file's directory and traverse up
     current_dir = os.path.dirname(os.path.abspath(__file__))
     while current_dir != "/":
@@ -77,5 +74,7 @@ def capture_git_change():
         return data_to_log
     except subprocess.CalledProcessError as e:
         print(f"Error getting git information: {e.output}")
+        return None
     except Exception as e:
         print(f"Error logging git information to wandb: {str(e)}")
+        return None

@@ -37,7 +37,7 @@ def mathd_normalize_answer(answer: Optional[str]) -> Optional[str]:
         if m is not None:
             answer = m.group("text").strip()
         return _strip_string(answer)
-    except:
+    except:  # pylint: disable=bare-except
         return answer
 
 
@@ -54,7 +54,7 @@ def _strip_string(string):
                 else:
                     try:
                         assert len(substr) >= 2
-                    except:
+                    except:  # pylint: disable=bare-except
                         return string
                     a = substr[0]
                     b = substr[1]
@@ -81,10 +81,10 @@ def _strip_string(string):
         try:
             a = int(a)
             b = int(b)
-            assert string == "{}/{}".format(a, b)
+            assert string == f"{a}/{b}"
             new_string = "\\frac{" + str(a) + "}{" + str(b) + "}"
             return new_string
-        except:
+        except:  # pylint: disable=bare-except
             return string
 
     def _remove_right_units(string):
@@ -226,7 +226,7 @@ def _is_float(num: str) -> bool:
 def _is_int(x: float) -> bool:
     try:
         return abs(x - int(round(x))) <= 1e-7
-    except:
+    except:  # pylint: disable=bare-except
         return False
 
 
@@ -239,7 +239,7 @@ def _str_is_int(x: str) -> bool:
         x_stripped = _strip_properly_formatted_commas(x)
         x_float = float(x_stripped)
         return abs(x_float - int(round(x_float))) <= 1e-7
-    except:
+    except:  # pylint: disable=bare-except
         return False
 
 
@@ -321,7 +321,7 @@ def _normalize(expr: str) -> str:
     if "\\" in expr:
         try:
             expr = _parse_latex(expr)
-        except:
+        except:  # pylint: disable=bare-except
             pass
 
     # edge case with mixed numbers and negative signs
@@ -346,7 +346,7 @@ def _normalize(expr: str) -> str:
 def count_unknown_letters_in_expr(expr: str):
     expr = expr.replace("sqrt", "")
     expr = expr.replace("frac", "")
-    letters_in_expr = set([x for x in expr if x.isalpha()])
+    letters_in_expr = {x for x in expr if x.isalpha()}
     return len(letters_in_expr)
 
 
@@ -375,7 +375,7 @@ def are_equal_under_sympy(ground_truth_normalized: str, given_normalized: str):
             simplified = sympy.simplify(sympy_diff)
             if simplified == 0:
                 are_equal = True
-    except:
+    except:  # pylint: disable=bare-except
         pass
     return are_equal
 
@@ -391,7 +391,7 @@ def split_tuple(expr: str):
         len(expr) > 2
         and expr[0] in TUPLE_CHARS
         and expr[-1] in TUPLE_CHARS
-        and all([ch not in expr[1:-1] for ch in TUPLE_CHARS])
+        and all(ch not in expr[1:-1] for ch in TUPLE_CHARS)
     ):
         elems = [elem.strip() for elem in expr[1:-1].split(",")]
     else:
@@ -419,7 +419,7 @@ def last_boxed_only_string(string):
                 break
         i += 1
 
-    if right_brace_idx == None:
+    if right_brace_idx is None:
         retval = None
     else:
         retval = string[idx : right_brace_idx + 1]
@@ -433,7 +433,7 @@ def remove_boxed(s):
         assert s[: len(left)] == left
         assert s[-1] == "}"
         return s[len(left) : -1]
-    except:
+    except:  # pylint: disable=bare-except
         return None
 
 

@@ -19,14 +19,11 @@ NexRL - A large-scale reinforcement learning training framework
 # Configure logging BEFORE importing any modules
 
 
-from .algorithm_processor import BaseAlgorithmProcessor
 from .base_module import NexRLModule
 from .controller import NexRLController
 from .data_loader import BaseDataLoader
 from .nexrl_types import Batch, ModelTag, Trajectory
 from .rollout_worker import AgentRolloutWorker, BaseRolloutWorker, SimpleRolloutWorker
-from .train_batch_pool import TrainBatchPool
-from .train_worker import TrainWorker
 from .trajectory_pool import TrajectoryPool
 from .weight_sync.weight_sync_controller import WeightSyncController
 
@@ -39,13 +36,9 @@ __all__ = [
     "AgentRolloutWorker",
     "SimpleRolloutWorker",
     "TrajectoryPool",
-    "BaseAlgorithmProcessor",
-    "TrainBatchPool",
-    "TrainWorker",
     "WeightSyncController",
     "BaseDataLoader",
     "Batch",
     "Trajectory",
-    "ControllerMetadata",
     "ModelTag",
 ]

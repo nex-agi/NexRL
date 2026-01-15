@@ -30,12 +30,12 @@ from .data_loader import SequentialDataLoader
 logger = logging.getLogger(__name__)
 
 
-class ParquetDataset(Dataset):
+class FileDataset(Dataset):
     """
-    PyTorch Dataset for loading data from parquet files.
+    PyTorch Dataset for loading data from parquet, CSV, or JSONL files.
 
     Args:
-        parquet_files: Single parquet file path or list of paths
+        data_files: Single file path or list of paths (supports .parquet, .csv, and .jsonl)
         filter_prompts: Whether to filter prompts based on length
         max_prompt_length: Maximum allowed prompt length (in tokens)
         tokenizer: Tokenizer for filtering prompts
@@ -44,17 +44,17 @@ class ParquetDataset(Dataset):
 
     def __init__(
         self,
-        parquet_files: Union[str, List[str]],
+        data_files: Union[str, List[str]],
         filter_prompts: bool = False,
         max_prompt_length: int = 1024,
         tokenizer=None,
         prompt_key: str = "prompt",
     ) -> None:
-        if not isinstance(parquet_files, (List, ListConfig)):
-            parquet_files = [parquet_files]
+        if not isinstance(data_files, (List, ListConfig)):
+            data_files = [data_files]
 
-        self.parquet_files = copy.deepcopy(parquet_files)
-        self.original_parquet_files = copy.deepcopy(parquet_files)  # use for resume
+        self.data_files = copy.deepcopy(data_files)
+        self.original_data_files = copy.deepcopy(data_files)  # use for resume
 
         self.filter_prompts = filter_prompts
         self.prompt_key = prompt_key
@@ -65,22 +65,34 @@ class ParquetDataset(Dataset):
         self.serialize_dataset = False
 
     def _read_files_and_filter(self) -> None:
-        """Read parquet files and optionally filter based on prompt length"""
+        """Read parquet, CSV, or JSONL files and optionally filter based on prompt length"""
         dataframes = []
-        for parquet_file in self.parquet_files:
-            # read parquet files and cache
-            dataframe = pd.read_parquet(parquet_file)
+        for data_file in self.data_files:
+            # read files based on extension
+            file_ext = data_file.lower().split(".")[-1]
+            if file_ext == "parquet":
+                dataframe = pd.read_parquet(data_file)
+            elif file_ext == "csv":
+                # Explicitly specify UTF-8 encoding to handle Chinese characters correctly
+                dataframe = pd.read_csv(data_file, encoding="utf-8")
+            elif file_ext == "jsonl":
+                # Read JSONL (JSON Lines) format
+                dataframe = pd.read_json(data_file, lines=True, encoding="utf-8")
+            else:
+                raise ValueError(
+                    f"Unsupported file format: {file_ext}. Only 'parquet', 'csv', and 'jsonl' are supported."
+                )
             dataframes.append(dataframe)
         self.dataframe = pd.concat(dataframes, ignore_index=True)
 
         logger.info(
-            f"ParquetDataset: Loaded {len(self.dataframe)} items from {len(self.parquet_files)} files"
+            f"FileDataset: Loaded {len(self.dataframe)} items from {len(self.data_files)} files"
         )
 
         # filter out too long prompts
         if self.filter_prompts:
             logger.info(
-                f"ParquetDataset: Filtering prompts with max_prompt_length={self.max_prompt_length}"
+                f"FileDataset: Filtering prompts with max_prompt_length={self.max_prompt_length}"
             )
             assert self.tokenizer is not None, "tokenizer is required when filter_prompts is True"
             tokenizer = self.tokenizer
@@ -113,12 +125,12 @@ class ParquetDataset(Dataset):
             self.dataframe = self.dataframe[self.dataframe.apply(check_prompt_length, axis=1)]
             self.dataframe = self.dataframe.reset_index(drop=True)
             logger.info(
-                f"ParquetDataset: Filtered dataset from {original_len} to {len(self.dataframe)} items"
+                f"FileDataset: Filtered dataset from {original_len} to {len(self.dataframe)} items"
             )
 
     def resume_dataset_state(self) -> None:
         """Resume dataset state by re-reading files"""
-        self.serialize_dataset = False if hasattr(self, "original_parquet_files") else True
+        self.serialize_dataset = not hasattr(self, "original_data_files")
         self._read_files_and_filter()
 
     def add_item_back(self, item: dict[str, Any]) -> None:
@@ -160,10 +172,10 @@ class TorchDataLoader(SequentialDataLoader):
     A real data loader that uses PyTorch's DataLoader internally.
 
     This class wraps PyTorch's DataLoader and adapts it to the SequentialDataLoader interface.
-    It reads data from parquet files and provides batched iteration.
+    It reads data from parquet, CSV, or JSONL files and provides batched iteration.
 
     Config parameters:
-        - data_files: List of parquet file paths to load
+        - data_files: List of file paths to load (supports .parquet, .csv, and .jsonl)
         - batch_size: Batch size for loading data
         - filter_prompts: Whether to filter prompts by length (default: False)
         - max_prompt_length: Maximum prompt length in tokens (default: 1024)
@@ -202,8 +214,8 @@ class TorchDataLoader(SequentialDataLoader):
                 logger.warning("filter_prompts is True but no tokenizer_path provided")
 
         # Create dataset
-        self._dataset = ParquetDataset(
-            parquet_files=self._data_files,
+        self._dataset = FileDataset(
+            data_files=self._data_files,
             filter_prompts=self._filter_prompts,
             max_prompt_length=self._max_prompt_length,
             tokenizer=self._tokenizer,

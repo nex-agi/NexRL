@@ -1,0 +1,123 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollout-router
+  namespace: nexrl
+  labels:
+    app: rollout-router
+    component: nexrl-infrastructure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rollout-router
+  template:
+    metadata:
+      labels:
+        app: rollout-router
+        component: nexrl-infrastructure
+    spec:
+      serviceAccountName: sglang-router
+      containers:
+      - name: rollout-router
+        image: lmsysorg/sglang:latest  # Change if using custom image
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - sglang_router.launch_router
+        - --port
+        - "12345"
+        - --host
+        - "0.0.0.0"
+        - --service-discovery
+        - --enable-igw
+        - --selector
+        - app=nexrl-rollout-sglang
+        - --service-discovery-namespace
+        - nexrl
+        - --service-discovery-port
+        - "8000"
+        ports:
+        - containerPort: 12345
+          name: http
+          protocol: TCP
+        env:
+        - name: REDIS_HOST
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_PORT
+        - name: REDIS_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_USERNAME
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: nexrl-redis-secret
+              key: REDIS_PASSWORD
+        resources:
+          requests:
+            cpu: "8"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "16Gi"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 12345
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 12345
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rollout-router-svc
+  namespace: nexrl
+  labels:
+    app: rollout-router
+    component: nexrl-infrastructure
+spec:
+  type: ClusterIP
+  ports:
+  - port: 12345
+    targetPort: 12345
+    protocol: TCP
+    name: http
+  selector:
+    app: rollout-router

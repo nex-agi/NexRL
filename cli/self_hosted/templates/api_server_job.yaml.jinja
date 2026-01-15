@@ -1,0 +1,95 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: {{name}}
+  namespace: {{namespace}}
+  annotations:
+    JobAlias: {{name}}
+    jobCreator: {{nexrl_user}}
+    scheduling.volcano.sh/queue-name: {{queue}}
+  labels:
+    reclaimableByVolcano: "{{reclaimableByVolcano}}"
+    volcano.sh/job-type: pytorch
+spec:
+  minAvailable: {{globalMinAvailable}}
+  ttlSecondsAfterFinished: 86400
+  schedulerName: volcano
+  priorityClassName: {{priorityClassName}}
+  plugins:
+    env: []
+    ssh: []
+    pytorch: ["--master=master", "--port=23456"]
+  policies:
+    - action: RestartJob
+      events:
+      - PodEvicted
+      - PodFailed
+  queue: {{queue}}
+  tasks:
+    - replicas: 1
+      minAvailable: 1
+      name: master
+      policies:
+        - action: RestartJob
+          events:
+          - PodEvicted
+          - PodFailed
+      template:
+        metadata:
+          labels:
+            app: {{name}}
+            component: api-server
+        spec:
+          containers:
+            - name: api-server
+              image: {{image}}
+              imagePullPolicy: Always
+              command:
+                - /bin/bash
+                - -c
+                - cli/self_hosted/run_api_server.sh
+              env:
+                - name: TZ
+                  value: UTC-8
+                - name: USER
+                  value: {{nexrl_user}}
+                - name: NEXRL_PATH
+                  value: {{nexrl_path}}
+                - name: EXPERIMENT_PATH
+                  value: {{experiment_path}}
+              workingDir: {{nexrl_path}}
+              resources:
+                limits:
+                  cpu: "16"
+                  memory: 128Gi
+                requests:
+                  cpu: "8"
+                  memory: 128Gi
+              volumeMounts:
+                - mountPath: {{storage_path}}
+                  name: storage-volume
+          volumes:
+            - name: storage-volume
+              hostPath:
+                path: {{storage_path}}
+                type: DirectoryOrCreate
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{name}}-svc
+  namespace: {{namespace}}
+spec:
+  selector:
+    volcano.sh/job-name: {{name}}
+    volcano.sh/task-spec: master
+  ports:
+    - name: api
+      protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP

@@ -34,7 +34,9 @@ class BaseDataLoader(NexRLModule, ABC):
     Abstract base class for data loading
     """
 
-    def __init__(self, config: DictConfig, is_validate: bool = False):
+    def __init__(
+        self, config: DictConfig, is_validate: bool = False
+    ):  # pylint: disable=unused-argument
         """
         Read file path from config.file, call _read_file to read file
 
@@ -64,7 +66,6 @@ class BaseDataLoader(NexRLModule, ABC):
         Args:
             item: Data item to add
         """
-        pass
 
     @abstractmethod
     def add_item_back(self, item: dict[str, Any]) -> None:
@@ -75,7 +76,6 @@ class BaseDataLoader(NexRLModule, ABC):
         Args:
             item: Data item to add
         """
-        pass
 
     @abstractmethod
     def get_next_item(self) -> dict[str, Any] | None:
@@ -85,28 +85,24 @@ class BaseDataLoader(NexRLModule, ABC):
         Returns:
             dict[str, Any]: Next data item or None if no more items
         """
-        pass
 
     @abstractmethod
     def can_return_item(self) -> bool:
         """
         Check if the data loader can return an item
         """
-        pass
 
     @abstractmethod
     def is_finished(self) -> bool:
         """
         Check if the data loader is empty
         """
-        pass
 
     @abstractmethod
     def unlock_for_weight_sync(self) -> None:
         """
         Notify the data loader that the weight sync is finished.
         """
-        pass
 
     @abstractmethod
     def reset(self) -> None:
@@ -117,7 +113,6 @@ class BaseDataLoader(NexRLModule, ABC):
         validation data loaders that need to iterate over the same dataset
         multiple times.
         """
-        pass
 
     def set_module_references(self, weight_sync_controller: WeightSyncController):
         """
@@ -318,7 +313,6 @@ class SequentialDataLoader(BaseDataLoader, ABC):
         Returns:
             list[dict[str, Any]]: List of data items (up to batch_size)
         """
-        pass
 
     @abstractmethod
     def _reset_iterator(self) -> None:
@@ -328,7 +322,6 @@ class SequentialDataLoader(BaseDataLoader, ABC):
         Concrete implementations should override this to handle their specific
         iterator reset logic (e.g., creating a new DataLoader iterator).
         """
-        pass
 
     @override
     def reset(self) -> None:

@@ -104,14 +104,19 @@ class Validator(NexRLModule):
 
         # Collect all score values by key
         score_values = defaultdict(list)
-
+        # {"data_source": {"score_key": [score_value]}}
+        score_values_with_data_source: defaultdict[str, defaultdict[str, list[float]]] = (
+            defaultdict(lambda: defaultdict(list))
+        )
         for traj in trajectories:
             score_dict = traj.get("score", {})
+            data_source = traj.get("data_source", "")
             if isinstance(score_dict, dict):
                 for key, value in score_dict.items():
                     # Try to convert value to float
                     try:
                         score_values[key].append(float(value))
+                        score_values_with_data_source[data_source][key].append(float(value))
                     except (ValueError, TypeError) as e:
                         logger.warning(
                             f"Cannot convert score value to float: key={key}, value={value}, error={e}"
@@ -121,9 +126,14 @@ class Validator(NexRLModule):
 
         # Compute mean for each score key and add "val/" prefix
         metrics = {}
+
         for key, values in score_values.items():
             if values:
                 metrics[f"val/{key}"] = float(np.mean(values))
+        for data_source, score_dict in score_values_with_data_source.items():
+            for key, values in score_dict.items():
+                if values:
+                    metrics[f"val/{data_source}_{key}"] = float(np.mean(values))
 
         # Add number of samples
         metrics["val/num_samples"] = len(trajectories)

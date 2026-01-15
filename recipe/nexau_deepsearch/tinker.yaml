@@ -1,0 +1,75 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+defaults:
+  - common
+  - _self_
+
+project_name: "NexRL-tinker"
+experiment_name: "tinker-nexau-deepsearch-training"
+
+#==========================================
+# ENVIRONMENT (Tinker-specific)
+#==========================================
+
+environment:
+  setup_script: "tinker.env.sh"
+  require_setup_script: true
+
+#==========================================
+# TRAINER CONFIGURATION (Tinker-specific)
+#==========================================
+
+trainer:
+  type: "remote_api_grpo"
+
+#==========================================
+# WEIGHT MANAGEMENT (Tinker-specific)
+#==========================================
+
+weight:
+  sync_method: "tinker"
+  sync_weight_path: ""
+
+#==========================================
+# SERVICE CONFIGURATION (Tinker-specific)
+#==========================================
+
+service:
+  inference_service:
+    model_tag: "default"
+    model: "Qwen/Qwen3-8B"
+    max_tokens: ${data.max_response_length}
+    tokenizer: null
+    backend: tinker
+    max_retries: 3
+    freeze_for_weight_sync: true
+    weight_type: ""
+
+  tinker_service:
+    base_url: null
+    lora_rank: 32
+    # API key from environment variable
+    api_key: "${oc.env:TINKER_API_KEY}"
+
+  train_service:
+    model_tag: "default"
+    backend: tinker
+
+    config:
+      loss_fn: "importance_sampling"
+      learning_rate: 1e-4
+      beta1: 0.9
+      beta2: 0.95
+      eps: 1e-8

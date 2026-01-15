@@ -21,10 +21,7 @@ import torch
 from ..train_service_client import TrainServiceClient
 
 
-class MockActorWorkerClient(TrainServiceClient):
-    def __init__(self, url: str, identifier: str | None = None):
-        super().__init__(url, identifier)
-
+class MockTrainServiceClient(TrainServiceClient):
     def initialize_worker(
         self,
         config_path: str | None = None,

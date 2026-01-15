@@ -77,7 +77,10 @@ class NexRLModule(ABC):
         return True
 
     def easy_dump(
-        self, value: Any, keys: list[str] = [], value_formatter: Callable[[Any], str] | None = None
+        self,
+        value: Any,
+        keys: list[str] | None = None,
+        value_formatter: Callable[[Any], str] | None = None,
     ) -> None:
         """
         Convenience method to dump values with automatic module context
@@ -105,6 +108,8 @@ class NexRLModule(ABC):
                 training_step = -1
 
         # Prepend module name to keys for better organization
+        if keys is None:
+            keys = []
         enriched_keys = [self._module_name] + keys
 
         easy_dump(

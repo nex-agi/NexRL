@@ -19,6 +19,7 @@ validate answers when necessary.
 """
 
 import json
+import logging
 import os
 import random
 from typing import Any
@@ -45,6 +46,8 @@ from .evaluation_utils.reward_config import RewardConfig, RewardFn
 THINKING_START = "<think>"
 THINKING_END = "</think>"
 
+logger = logging.getLogger(__name__)
+
 
 class RewardMathFn(RewardFn):
     """
@@ -54,7 +57,7 @@ class RewardMathFn(RewardFn):
     the reward based on the correctness of the provided answer compared to the ground truth.
     """
 
-    def __call__(
+    def __call__(  # pylint: disable=redefined-outer-name
         self,
         prompt: str,
         model_response: str,
@@ -62,17 +65,34 @@ class RewardMathFn(RewardFn):
         raw_prompt: list[dict[str, Any]] | None = None,
     ):
 
-        # Extract solution.
-        # if THINKING_START in model_response and THINKING_END in model_response:
-        if THINKING_START in prompt + model_response and THINKING_END in prompt + model_response:
-            model_solution = model_response.split(THINKING_END)[1]
-            # print('model_solution', model_solution)
+        # Extract solution based on thinking format usage.
+        # Logic:
+        # 1. If THINKING_START exists → model is using thinking format
+        #    - If THINKING_END also exists → extract solution after </think>
+        #    - If THINKING_END missing → truncated thinking, return format_error
+        # 2. If THINKING_START doesn't exist → model doesn't use thinking format
+        #    - Use full response as solution
+        combined_text = prompt + model_response
+        if THINKING_START in combined_text:
+            # Model is using thinking format
+            if THINKING_END in combined_text:
+                # Complete thinking block - extract solution after </think>
+                model_solution = model_response.split(THINKING_END)[1]
+            else:
+                # Thinking started but not finished - truncated
+                logger.debug(
+                    f"Reward = {self.config.format_error_reward}, due to thinking truncation"
+                )
+                return self.config.format_error_reward, False
         else:
-            return self.config.format_error_reward, False
+            # Model doesn't use thinking format - use full response
+            logger.debug("No thinking tags found, using full response as solution")
+            model_solution = model_response
 
         model_answer = extract_answer(model_solution)
-        # print('model_answer', model_answer)
+        logger.debug(f"model_answer: {model_answer}")
         if model_answer is None:
+            logger.debug(f"Reward = {self.config.format_error_reward}, due to model_answer is None")
             return self.config.format_error_reward, False
 
         # Convert single answer to list for uniform processing
@@ -96,24 +116,28 @@ class RewardMathFn(RewardFn):
         # print('processed_ground_truths', processed_ground_truths)
 
         if not processed_ground_truths:
+            logger.debug(
+                f"Reward = {self.config.unk_error_reward}, due to processed_ground_truths is empty"
+            )
             return self.config.unk_error_reward, False
 
         # Check against all possible correct answers
-        for ground_truth in processed_ground_truths:
-            is_correct = grade_answer_mathd(model_answer, ground_truth) or grade_answer_sympy(
-                model_answer, ground_truth
+        for gt in processed_ground_truths:
+            is_correct = grade_answer_mathd(model_answer, gt) or grade_answer_sympy(
+                model_answer, gt
             )
             if is_correct:
+                logger.debug(f"Reward = {self.config.correct_reward}, due to correct answer")
                 return self.config.correct_reward, True
 
         # If latex heuristics fail and ORM is enabled, use LLM as ORM to evaluate correctness
         if self.config.use_math_orm:
-            for ground_truth in processed_ground_truths:
+            for gt in processed_ground_truths:
                 try:
                     orm_response = call_oai_rm_llm(
                         prompt=prompt,
                         model_output=model_answer,
-                        ground_truth=ground_truth,
+                        ground_truth=gt,
                         temperature=0.0,
                     )
 
@@ -125,6 +149,7 @@ class RewardMathFn(RewardFn):
                     print("Error calling LLM ORM:", e)
                     continue
 
+        logger.debug(f"Reward = {self.config.format_reward}, due to no correct answer")
         return self.config.format_reward, False
 
 
@@ -138,9 +163,13 @@ class MathJudgeV5Fn(RewardFn):
         urls = urls_env.split("\n")
         self.clients = [openai.OpenAI(base_url=url, api_key="_") for url in urls]
         self.client = random.choice(self.clients)
-        self.model_name = os.environ.get("LLM_JUDGE_MODEL")
 
-    def __call__(
+        model_name = os.environ.get("LLM_JUDGE_MODEL")
+        if model_name is None:
+            raise ValueError("LLM_JUDGE_MODEL environment variable is not set")
+        self.model_name: str = model_name
+
+    def __call__(  # pylint: disable=redefined-outer-name
         self,
         prompt: str,
         model_response: str,
@@ -203,7 +232,7 @@ class MathJudgeV5Fn(RewardFn):
 
 
 class HybridMathJudgeFnV5(RewardFn):
-    def __call__(
+    def __call__(  # pylint: disable=redefined-outer-name
         self,
         prompt: str,
         model_response: str,
@@ -232,7 +261,7 @@ class HybridMathJudgeFnV5(RewardFn):
         return reward_score, is_correct
 
 
-def compute_score(
+def compute_score(  # pylint: disable=redefined-outer-name
     prompt_str: str,
     solution_str: str,
     ground_truth: str | list[str],
@@ -262,6 +291,7 @@ def compute_score(
             ground_truth=ground_truth,
             raw_prompt=raw_prompt,
         )
+        logger.debug(f"Reward: {reward_score}, is_correct: {is_correct}")
         return reward_score
     except Exception as e:
         print("Error computing score:", e)

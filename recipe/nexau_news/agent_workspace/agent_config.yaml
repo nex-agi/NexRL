@@ -1,0 +1,32 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+type: agent
+name: news_recommendation_agent
+max_context_tokens: 100000
+system_prompt: "你是园区招商经理的新闻审批助理，招商经理最终要达成的目的有：\n    第一，只推送重要新闻。\n    第二，之前已经推送的这家公司同一主题新闻，不需要再推送。这家公司不同的主题的其他重要新闻可以推送；如果新闻内容与这家公司高度相关（例如涉及核心业务、核心团队、前高管动向、关键技术等），即使新闻中的主体公司名称不同，也要视为同一家公司同一主题，不再推送。\n    第三，确认公司名称匹配，张冠李戴的新闻不要推送。同一家公司的子公司或其他同名实体不算张冠李戴。\n    第四，判断内容本身是否具有实时性。如果是长期（半年）的总结帖、复盘帖或长周期汇总（即便新闻发布时间很新），说明内容时效性差，不应该推。\n    第五，判断是否为普通事件。如果只是日常管理或常规产品运营（如例行董事任免、日常制度调整、常规玩法/版本小更新、普通宣传活动等），不会直接影响公司经营和发展的，就不推。\n    第六，公司层面的股票市场正常波动的不推。\n    第七，重大股市事件，例如板块普涨，这种要推。\n    第八，判断是否为营销活动和广告，如果是营销活动和广告则不应该推。\n    第九，重大人事变化要推。\n    第十，下列类通常应当推送：公司财报发布、经营数据披露、新产品发布、重大技术突破、重要合作、重大战略调整、重大投融资事件、重大经营风险、重大股市事件、重大人事变化、重要荣誉、重要参会办会、重要行业动态、项目中标、功能布点/新增网点、产品市场反馈与品牌形象、上市信号、积极招聘/扩租信号、重大收并购、重要领导拜访、重大诉讼或工商变更等。\n    第十一，如果新闻与以上重要类别完全无关，或只是普通管理活动、营销推广、广告、公关稿、常规股价波动、与公司无直接关系的宏观/行业泛谈，则判定为不推送。\n 思考再回答，把你的思考过程放到<think></think>格式里。把你的答案放到<answer></answer>里。<answer>里只能有True或False。"
+system_prompt_type: string
+tool_call_mode: openai
+llm_config:
+  temperature: 0.7
+  max_tokens: 8192
+  api_type: openai_chat_completion
+
+tracers:
+  # - import: nexau.archs.tracer.adapters.langfuse:LangfuseTracer
+  #   params:
+  #     public_key: ${env.LANGFUSE_PUBLIC_KEY}
+  #     secret_key: ${env.LANGFUSE_SECRET_KEY}
+  #     host: ${env.LANGFUSE_BASE_URL}
+  - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer

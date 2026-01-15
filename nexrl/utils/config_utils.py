@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """
 Configuration utilities for handling OmegaConf DictConfig operations.
 """
@@ -57,3 +56,23 @@ def insert_config(
         # Restore struct mode if requested
         if restore_struct:
             OmegaConf.set_struct(target, original_struct)
+
+
+def use_tinker(config: DictConfig) -> bool:
+    """
+    Check if Tinker is used in the configuration.
+
+    Args:
+        config: The configuration
+
+    Returns:
+        True if Tinker is used, False otherwise
+    """
+    return config.service.train_service.backend == "tinker"
+
+
+def use_weaver(config: DictConfig) -> bool:
+    """
+    Check if Weaver is used in the configuration.
+    """
+    return config.service.train_service.backend == "weaver"

@@ -18,7 +18,7 @@ Tests for core algorithms
 
 import torch
 
-from nexrl.algorithm_processor.core_algos import (
+from nexrl.algorithm.core_algos import (
     AdaptiveKLController,
     FixedKLController,
     compute_grpo_outcome_advantage,

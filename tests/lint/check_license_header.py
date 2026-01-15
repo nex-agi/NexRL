@@ -19,9 +19,11 @@ import sys
 from pathlib import Path
 from typing import List, Sequence
 
-# Expected license header lines (without comment markers)
-EXPECTED_HEADER = [
-    "Copyright (c) Nex-AGI. All rights reserved.",
+# Expected first line (Nex-AGI copyright)
+EXPECTED_FIRST_LINE = "Copyright (c) Nex-AGI. All rights reserved."
+
+# Expected Apache License content (after any additional copyright lines)
+EXPECTED_LICENSE_CONTENT = [
     "",
     'Licensed under the Apache License, Version 2.0 (the "License");',
     "you may not use this file except in compliance with the License.",
@@ -97,16 +99,43 @@ def extract_header_lines(file_path: Path, num_lines: int = 20) -> List[str]:
 
 
 def check_license_header(file_path: Path) -> bool:
-    """Check if a file has the correct license header."""
-    header_lines = extract_header_lines(file_path, num_lines=25)
+    """Check if a file has the correct license header.
 
-    # Check if the expected header is present in the extracted lines
-    for i, expected_line in enumerate(EXPECTED_HEADER):
-        if i >= len(header_lines):
+    The header must:
+    1. Start with the Nex-AGI copyright line
+    2. Contain the Apache License content (additional copyright lines are allowed)
+    """
+    header_lines = extract_header_lines(file_path, num_lines=30)
+
+    if not header_lines:
+        return False
+
+    # Check first line is the Nex-AGI copyright
+    first_line = header_lines[0].strip()
+    if first_line != EXPECTED_FIRST_LINE.strip():
+        return False
+
+    # Find where the Apache License content starts (the "Licensed under" line)
+    license_start_idx = None
+    for i, line in enumerate(header_lines[1:], start=1):
+        if line.strip() == 'Licensed under the Apache License, Version 2.0 (the "License");':
+            license_start_idx = i
+            break
+
+    if license_start_idx is None:
+        return False
+
+    # Check that the Apache License content matches (starting from the blank line before "Licensed under")
+    # We need to go back one line to match the blank line before "Licensed under"
+    actual_license_start = license_start_idx - 1
+
+    for i, expected_line in enumerate(EXPECTED_LICENSE_CONTENT):
+        actual_idx = actual_license_start + i
+        if actual_idx >= len(header_lines):
             return False
 
         # Allow some flexibility in whitespace
-        actual = header_lines[i].strip()
+        actual = header_lines[actual_idx].strip()
         expected = expected_line.strip()
 
         if actual != expected:
@@ -149,7 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if not check_license_header(file_path):
             print(f"Warning: Missing or incorrect license header: {filename}")
-            return_code = 0
+            return_code = 1
 
     return return_code
 

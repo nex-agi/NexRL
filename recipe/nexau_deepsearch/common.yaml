@@ -1,0 +1,163 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+project_name: "NexRL-NexAU-DeepSearch"
+experiment_name: "nexau-deepsearch-training"
+launch_mode: "local"
+multi_model: "false"
+
+#==========================================
+# LOGGING CONFIGURATION
+#==========================================
+
+logger:
+  backend: ['console', 'wandb']
+  enable_feishu_logging: false
+  feishu_url: "${oc.env:FEISHU_WEBHOOK_URL,}"
+
+environment:
+  setup_script: ""
+  require_setup_script: false
+
+#==========================================
+# RESUME CONFIGURATION
+#==========================================
+
+resume:
+  mode: disable
+  resume_path: ""
+
+#==========================================
+# DATA LOADER CONFIGURATION
+#==========================================
+
+data:
+  type: "torch"
+  seed: 42
+
+  # Data files - Use environment variable for base path
+  data_files:
+    - "${oc.env:NEXRL_DATA_PATH}/deepsearch/train_data.parquet"
+
+  batch_size: 16
+  keep_batch_order: true
+  rollout_repeat_n: 8
+  prompt_key: "prompt"
+  filter_prompts: false
+  max_prompt_length: 20000
+  max_response_length: 8192
+
+  # Tokenizer path - Use environment variable
+  tokenizer_path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
+
+  shuffle: true
+  drop_last: true
+
+#==========================================
+# ROLLOUT CONFIGURATION
+#==========================================
+
+rollout_worker:
+  type: "nexau"
+  num_workers: 128
+  need_llm_inference: true
+  temperature: 0.7
+
+  # NexAU-specific configuration (relative to this config file)
+  nexau_agent_config_path: "agent_workspace/agent_config.yaml"
+  evaluator_module_path: "agent_workspace/evaluator.py:DeepResearchEvaluator"
+  nexau_agent_workspace: "agent_workspace"
+  task_name: "deepsearch"
+
+  max_prompt_length: ${data.max_prompt_length}
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# TRAJECTORY POOL CONFIGURATION
+#==========================================
+
+trajectory_pool:
+  type: "default"
+  batch_size: 128
+  group_size: 1
+  key_list: []
+  check_batch_ready_function: "loaded_batch_finished"
+
+#==========================================
+# TRAINER CONFIGURATION
+#==========================================
+
+trainer:
+  total_train_steps: 200
+  save_freq: 0
+  max_prompt_length: ${data.max_prompt_length}
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# WEIGHT MANAGEMENT CONFIGURATION
+#==========================================
+
+weight:
+  type: "default"
+  sync_mode: "sync"
+  staleness_threshold: 0
+  validate_freq: ${validate.eval.validate_freq}
+
+#==========================================
+# VALIDATION CONFIGURATION
+#==========================================
+
+validate:
+  validate_before_train: false
+
+  data:
+    type: "mock"
+    seed: ${data.seed}
+    data_files:
+      - "${oc.env:NEXRL_DATA_PATH}/deepsearch/valid_data.parquet"
+    batch_size: 16
+    prompt_key: "prompt"
+    filter_prompts: false
+    max_prompt_length: ${data.max_prompt_length}
+    tokenizer_path: ${data.tokenizer_path}
+    shuffle: true
+    drop_last: false
+
+  eval:
+    type: "default"
+    validate_freq: 0
+
+#==========================================
+# RUNTIME MONITORING CONFIGURATION
+#==========================================
+
+runtime_monitor:
+  exception_handling:
+    enabled: true
+    check_interval: 1.0
+    policy: "stop_on_error"
+
+  health_check:
+    enabled: true
+    check_interval: 10.0
+    timeout: 5.0
+
+#==========================================
+# COMPUTE RESOURCE CONFIGURATION
+#==========================================
+
+resource:
+  agent:
+    num_workers: 0
+    agents_per_worker: 32

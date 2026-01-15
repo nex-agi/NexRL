@@ -12,31 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Trainer Module - Contains trainer classes
+"""
 
-from .fsdp_worker.fsdp_actor import DataParallelPPOActor
-from .utils.core_utils import (
-    CheckpointRequest,
-    ConvertCheckpointRequest,
-    DataProtoRequest,
-    DataProtoResponse,
-    NumpyData,
-    SaveCheckpointRequest,
-    StatusResponse,
-    TensorData,
-)
-from .utils.protocol import DataProto
+from .base_trainer import BaseTrainer
+from .remote_api_cross_entropy_trainer import RemoteApiCrossEntropyTrainer
+from .remote_api_grpo_trainer import RemoteApiGrpoTrainer
+from .remote_api_trainer import RemoteApiTrainer
+from .self_hosted_grpo_trainer import SelfHostedGrpoTrainer
+from .self_hosted_trainer import SelfHostedTrainer
 
 __all__ = [
-    "DataProto",
-    "DataParallelPPOActor",
-    "TensorData",
-    "NumpyData",
-    "DataProtoRequest",
-    "DataProtoResponse",
-    "CheckpointRequest",
-    "SaveCheckpointRequest",
-    "ConvertCheckpointRequest",
-    "StatusResponse",
+    "BaseTrainer",
+    "SelfHostedTrainer",
+    "SelfHostedGrpoTrainer",
+    "RemoteApiTrainer",
+    "RemoteApiGrpoTrainer",
+    "RemoteApiCrossEntropyTrainer",
 ]
-
-__version__ = "0.1.0"

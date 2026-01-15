@@ -16,17 +16,14 @@
 Mock classes for testing purposes
 """
 
-from .mock_algorithm_processor import MockAlgorithmProcessor
 from .mock_data_loader import MockDataLoader
-from .mock_llm_service_client import MockLLMServiceClient
+from .mock_inference_service_client import MockInferenceServiceClient
 from .mock_rollout_worker import MockRolloutWorker
-from .mock_train_service_client import MockActorWorkerClient
+from .mock_train_service_client import MockTrainServiceClient
 
 __all__ = [
-    "MockAlgorithmProcessor",
-    "MockCheckpointManager",
     "MockRolloutWorker",
     "MockDataLoader",
-    "MockLLMServiceClient",
-    "MockActorWorkerClient",
+    "MockInferenceServiceClient",
+    "MockTrainServiceClient",
 ]

@@ -1,0 +1,159 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+project_name: "NexRL-PigLatin"
+experiment_name: "pig-latin-training"
+launch_mode: "local"
+multi_model: "false"
+
+#==========================================
+# LOGGING CONFIGURATION
+#==========================================
+
+logger:
+  backend: ['console', 'wandb']
+  enable_feishu_logging: false
+  feishu_url: "${oc.env:FEISHU_WEBHOOK_URL,}"
+
+environment:
+  setup_script: ""
+  require_setup_script: false
+
+#==========================================
+# RESUME CONFIGURATION
+#==========================================
+
+resume:
+  mode: disable
+  resume_path: ""
+
+#==========================================
+# DATA LOADER CONFIGURATION
+#==========================================
+
+data:
+  type: "torch"
+  seed: 42
+
+  # Data file - Use environment variable for base path
+  data_files:
+    - "${oc.env:NEXRL_DATA_PATH}/pig_latin/train.jsonl"
+
+  batch_size: 4
+  keep_batch_order: true
+  # For supervised learning, we only need 1 trajectory per example
+  rollout_repeat_n: 1
+  # For pig latin, we use "input" key for the input text
+  prompt_key: "input"
+  filter_prompts: false
+  max_prompt_length: 512
+  max_response_length: 512
+
+  # Tokenizer path - Use environment variable
+  tokenizer_path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
+
+  shuffle: true
+  drop_last: false
+
+#==========================================
+# ROLLOUT CONFIGURATION
+#==========================================
+
+rollout_worker:
+  type: "pig_latin"
+  num_workers: 4
+  # No LLM inference needed for supervised learning
+  need_llm_inference: false
+  temperature: 0.0
+  tokenizer: ${data.tokenizer_path}
+  max_prompt_length: ${data.max_prompt_length}
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# TRAJECTORY POOL CONFIGURATION
+#==========================================
+
+trajectory_pool:
+  type: "default"
+  batch_size: 4
+  group_size: 1
+  key_list: []
+  check_batch_ready_function: "loaded_batch_finished"
+
+#==========================================
+# TRAINER CONFIGURATION
+#==========================================
+
+trainer:
+  total_train_steps: 6
+  save_freq: 0
+  max_prompt_length: ${data.max_prompt_length}
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# WEIGHT MANAGEMENT CONFIGURATION
+#==========================================
+
+weight:
+  type: "default"
+  sync_mode: "sync"
+  staleness_threshold: 0
+  validate_freq: ${validate.eval.validate_freq}
+
+#==========================================
+# VALIDATION CONFIGURATION
+#==========================================
+
+validate:
+  validate_before_train: false
+
+  data:
+    type: "mock"
+    seed: ${data.seed}
+    data_files: []
+    batch_size: 4
+    prompt_key: "input"
+    filter_prompts: false
+    max_prompt_length: ${data.max_prompt_length}
+    tokenizer_path: ${data.tokenizer_path}
+    shuffle: false
+    drop_last: false
+
+  eval:
+    type: "default"
+    validate_freq: 0
+
+#==========================================
+# RUNTIME MONITORING CONFIGURATION
+#==========================================
+
+runtime_monitor:
+  exception_handling:
+    enabled: true
+    check_interval: 1.0
+    policy: "stop_on_error"
+
+  health_check:
+    enabled: true
+    check_interval: 10.0
+    timeout: 5.0
+
+#==========================================
+# COMPUTE RESOURCE CONFIGURATION
+#==========================================
+
+resource:
+  agent:
+    num_workers: 0
+    agents_per_worker: 32

@@ -23,7 +23,7 @@ import torch
 from omegaconf import OmegaConf
 
 from nexrl.algorithm_processor.grpo_processor import GRPOProcessor
-from nexrl.mock import MockActorWorkerClient
+from nexrl.mock import MockTrainServiceClient
 from nexrl.nexrl_types import Batch
 
 
@@ -61,7 +61,7 @@ def grpo_processor(grpo_config):
     ):
         with patch(
             "nexrl.algorithm_processor.grpo_processor.create_train_service_client",
-            return_value=MockActorWorkerClient("test", "test"),
+            return_value=MockTrainServiceClient("test", "test"),
         ):
             processor = GRPOProcessor(grpo_config)
 
@@ -156,7 +156,7 @@ def test_grpo_processor_init_kl_controller_fixed(grpo_config):
     ):
         with patch(
             "nexrl.algorithm_processor.grpo_processor.create_train_service_client",
-            return_value=MockActorWorkerClient("test", "test"),
+            return_value=MockTrainServiceClient("test", "test"),
         ):
             processor = GRPOProcessor(grpo_config)
 
@@ -184,7 +184,7 @@ def test_grpo_processor_init_kl_controller_adaptive(grpo_config):
     ):
         with patch(
             "nexrl.algorithm_processor.grpo_processor.create_train_service_client",
-            return_value=MockActorWorkerClient("test", "test"),
+            return_value=MockTrainServiceClient("test", "test"),
         ):
             processor = GRPOProcessor(grpo_config)
 

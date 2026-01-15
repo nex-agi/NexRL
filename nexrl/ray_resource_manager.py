@@ -19,7 +19,7 @@ Focuses on actor colocation and creation without placement group complexity
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
 import ray
@@ -221,7 +221,7 @@ class RayResourceManager:
         # Group roles by colocation group
         colocation_groups: dict[str | None, list[NexRLRole]] = {}
 
-        for role, (cls, config, count, group) in self._role_registry.items():
+        for role, (_, _, _, group) in self._role_registry.items():
             if group not in colocation_groups:
                 colocation_groups[group] = []
             colocation_groups[group].append(role)
@@ -258,7 +258,7 @@ class RayResourceManager:
 
         # Create actors (Ray only appears here)
         actors = []
-        for i in range(count):
+        for _ in range(count):
             actor = ray_actor_cls.options(**ray_options).remote(config)
             actors.append(actor)
 
@@ -358,8 +358,6 @@ def create_colocated_class(class_dict: dict[str, ClassWithInitArgs]) -> type:
     Returns:
         A pure Python class (ColocatedWorker) that contains all the roles
     """
-    import os
-
     cls_dict = {}
     init_args_dict = {}
 

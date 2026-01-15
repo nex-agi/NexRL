@@ -22,7 +22,7 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-from nexrl.mock import MockActorWorkerClient
+from nexrl.mock import MockTrainServiceClient
 from nexrl.nexrl_types import Batch
 from nexrl.train_batch_pool import TrainBatchPool
 from nexrl.train_worker import TrainWorker
@@ -53,7 +53,7 @@ def train_worker(train_worker_config):
     """Create TrainWorker with mock backend"""
     with patch(
         "nexrl.train_worker.create_train_service_client",
-        return_value=MockActorWorkerClient("test", "test"),
+        return_value=MockTrainServiceClient("test", "test"),
     ):
         worker = TrainWorker(train_worker_config)
     return worker

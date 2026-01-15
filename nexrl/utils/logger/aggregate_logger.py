@@ -20,9 +20,9 @@ import numbers
 from typing import Dict
 
 
-def concat_dict_to_str(dict: Dict, step):
+def concat_dict_to_str(data_dict: Dict, step):
     output = [f"step:{step}"]
-    for k, v in dict.items():
+    for k, v in data_dict.items():
         if isinstance(v, numbers.Number):
             output.append(f"{k}:{v:.3f}")
     output_str = " - ".join(output)
@@ -36,7 +36,7 @@ class LocalLogger:
         self.logger = logging.getLogger(self.__class__.__name__)
 
     def flush(self):
-        pass
+        """Flush method for compatibility with LoggerProtocol."""
 
     def log(self, data, step):
         if self.print_to_console:
@@ -45,4 +45,3 @@ class LocalLogger:
 
     def finish(self, exit_code: int = 0) -> None:
         """Finish method for compatibility with LoggerProtocol."""
-        pass

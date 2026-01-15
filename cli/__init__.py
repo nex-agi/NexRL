@@ -13,13 +13,19 @@
 # limitations under the License.
 
 """
-NexRL CLI Tool
+NexRL CLI - Open-Source Launcher
 
-A command-line interface for managing NexRL training infrastructure.
+Launch NexRL training on Kubernetes using standard kubectl and open-source tools.
+
+Usage:
+    nexrl -m self-hosted -c config.yaml --run-nexrl
+    nexrl -m training-service -c config.yaml --run-nexrl
+
+Alternatively:
+    python cli/run.py -m self-hosted -c config.yaml --run-nexrl
+
+Setup:
+    See cli/setup/ for Kubernetes configuration files
 """
 
 __version__ = "1.0.0"
-
-from .main import cli
-
-__all__ = ["cli"]

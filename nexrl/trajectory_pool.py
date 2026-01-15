@@ -18,12 +18,11 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-import torch
 from omegaconf import DictConfig
 
 from .base_module import NexRLModule
 from .executor import execute
-from .nexrl_types import Batch, ModelTag, Trajectory
+from .nexrl_types import ModelTag, Trajectory
 
 if TYPE_CHECKING:
     from nexrl.activity_tracker import ActivityTrackerProxy
@@ -59,17 +58,16 @@ class TrajectoryStoreBase(ABC):
         Returns:
             True if successfully added, False otherwise
         """
-        pass
 
-    def get_batch(self, batch_size: int | None = None) -> Batch | None:
+    def get_trajectories(self, batch_size: int | None = None) -> list[Trajectory] | None:
         """
-        Get a batch of trajectories from finished_samples (unified implementation).
+        Get a list of trajectories from finished_samples (unified implementation).
 
         Args:
-            batch_size: Number of trajectories to include in the batch
+            batch_size: Number of trajectories to retrieve
 
         Returns:
-            Batch containing the trajectories, or None if not enough samples
+            List of trajectories, or None if not enough samples
         """
         with self._lock:
             if batch_size is None:
@@ -80,7 +78,7 @@ class TrajectoryStoreBase(ABC):
             # Get batch_size trajectories from finished_samples
             batch_trajectories = self._finished_samples[:batch_size]
             self._finished_samples = self._finished_samples[batch_size:]
-            return self._to_batch(batch_trajectories)
+            return batch_trajectories
 
     def is_empty(self) -> bool:
         """
@@ -99,70 +97,10 @@ class TrajectoryStoreBase(ABC):
         Returns:
             True if active storage is empty
         """
-        pass
-
-    def _to_batch(self, trajectories: list[Trajectory]) -> Batch:
-        """
-        Convert list of trajectories to a Batch object.
-        This is shared logic across all stores.
-        """
-        if not trajectories:
-            raise ValueError("Cannot create batch from empty trajectories")
-
-        # Check that all trajectories have the same keys
-        if len(trajectories) > 1:
-            first_keys = set(trajectories[0].keys())
-            for i, trajectory in enumerate(trajectories[1:], 1):
-                current_keys = set(trajectory.keys())
-                if current_keys != first_keys:
-                    raise ValueError(
-                        f"Trajectory at index {i} has different keys. Expected: {first_keys}, Got: {current_keys}"
-                    )
-
-        # Initialize the values dictionary
-        values: dict[str, Any] = {}
-
-        # Initialize data structures based on the first trajectory
-        first_trajectory = trajectories[0]
-        for key in first_trajectory.keys():
-            values[key] = []
-
-        # Collect all values
-        for trajectory in trajectories:
-            for key, value in trajectory.items():
-                values[key].append(value)
-
-        # Merge tensors into 2D tensors
-        for key, value_list in values.items():
-            if value_list and isinstance(value_list[0], torch.Tensor):
-                if all(t.dim() == 1 for t in value_list):
-                    # All tensors are 1D, stack them to create 2D tensor
-                    values[key] = torch.stack(value_list, dim=0)
-                elif all(t.dim() == 2 for t in value_list):
-                    # All tensors are 2D, stack them to create 3D tensor, then reshape to 2D
-                    stacked = torch.stack(value_list, dim=0)
-                    batch_size, seq_len, feature_dim = stacked.shape
-                    values[key] = stacked.view(batch_size, -1)
-                else:
-                    # Mixed dimensions or higher dimensions, raise error
-                    raise ValueError(f"Tensors for key '{key}' have inconsistent dimensions")
-
-        # Add batch_size to the metadata
-        metadata = {
-            "batch_size": len(trajectories),
-            "model_tag": self.model_tag,
-            "temperature": trajectories[0].get("temperature", 1.0),
-        }
-
-        return Batch(values=values, metadata=metadata)
 
 
 class SimpleTrajectoryStore(TrajectoryStoreBase):
     """Simple trajectory store without any grouping - directly adds to finished_samples"""
-
-    def __init__(self, config: DictConfig, model_tag: ModelTag):
-        super().__init__(config, model_tag)
-        # No intermediate storage needed for simple store
 
     def put_trajectory(self, trajectory: Trajectory) -> bool:
         """Add trajectory directly to finished_samples"""
@@ -312,15 +250,22 @@ class TrajectoryPoolInstance:
         key_list = config.get("key_list", [])
 
         if not key_list:
+            logger.info(f"No grouping keys specified, using simple store for model_tag {model_tag}")
             # No grouping keys specified, use simple store
             return SimpleTrajectoryStore(config, model_tag)
         elif len(key_list) == 1:
-            # Single grouping key, use grouped store
+            logger.info(
+                f"Single grouping key specified, using grouped store for model_tag {model_tag}"
+            )
+            # Single grouping key, use grouped stor
             config_copy = config.copy()
             config_copy["group_key"] = key_list[0]
             return GroupedTrajectoryStore(config_copy, model_tag)
         else:
             # Multiple grouping keys, use hierarchical store
+            logger.info(
+                f"Multiple grouping keys specified, using hierarchical store for model_tag {model_tag}"
+            )
             return HierarchicalTrajectoryStore(config, model_tag)
 
     def put_trajectory(self, trajectory: Trajectory) -> str:
@@ -343,9 +288,9 @@ class TrajectoryPoolInstance:
 
         return "success"
 
-    def _prepare_batch_if_ready(self) -> Batch | None:
+    def _prepare_trajectories_if_ready(self) -> list[Trajectory] | None:
         """
-        If the trajectory store has enough trajectories to form a batch, organize them into a batch and return.
+        If the trajectory store has enough trajectories to form a batch, return them as a list.
         """
         batch_ready = False
         batch_size: int | None = None  # None means get all trajectories from store
@@ -362,32 +307,31 @@ class TrajectoryPoolInstance:
 
         # Check if we can form a batch
         if batch_ready:
-            logger.info(f"Batch ready for model_tag {self.model_tag}")
+            logger.info(f"Trajectories ready for model_tag {self.model_tag}")
 
-            # Try to get a batch from the store
-            batch = self._store.get_batch(
+            # Try to get trajectories from the store
+            trajectories = self._store.get_trajectories(
                 batch_size=batch_size
             )  # batch_size = None means get all trajectories from store
-            assert batch is not None, "Batch should not be None"
-            return batch
+            assert trajectories is not None, "Trajectories should not be None"
+            return trajectories
 
         return None
 
-    def get_batch(self) -> Batch | None:
+    def get_trajectories(self) -> list[Trajectory] | None:
         """
-        Get a batch if possible
-
-        Args:
-            batch_size: Size of batch (currently ignored as we return pre-formed batches)
+        Get a list of trajectories if possible
 
         Returns:
-            A ready batch if available, None otherwise
+            A list of ready trajectories if available, None otherwise
         """
-        batch = None
+        trajectories = None
         with self._lock:
-            batch = self._prepare_batch_if_ready()
+            trajectories = self._prepare_trajectories_if_ready()
 
-        if batch is not None:
+        if trajectories is not None:
+            logger.info("TrajectoryPoolInstance get trajectories successfully!")
+
             current_time = time.time()
             if self._start_rollout_time is not None:
                 rollout_time = current_time - self._start_rollout_time
@@ -401,7 +345,7 @@ class TrajectoryPoolInstance:
             self._batch_count += 1
 
             execute(self._weight_sync_controller.trajectory_pool_notify_batch_ready, self.model_tag)
-        return batch
+        return trajectories
 
     def is_empty(self) -> bool:
         """Check if store are empty"""
@@ -411,10 +355,11 @@ class TrajectoryPoolInstance:
     def _check_batch_size_reached(self) -> bool:
         """Check if the store has enough trajectories to form a batch"""
         batch_size = self._config.get("batch_size", 32)
-        return len(self._store._finished_samples) >= batch_size
+        return len(self._store._finished_samples) >= batch_size  # pylint: disable=protected-access
 
     def _check_loaded_batch_finished(self) -> bool:
         """Check if all workers are finished and dataloader is drained"""
+        # pylint: disable=protected-access
         have_samples_in_store = len(self._store._finished_samples) > 0
         if not have_samples_in_store:
             return False
@@ -494,37 +439,34 @@ class TrajectoryPool(NexRLModule):
 
         return instance.put_trajectory(trajectory)
 
-    def get_batch(self, model_tag: ModelTag | None = None) -> Batch | None:
+    def get_trajectories(self, model_tag: ModelTag | None = None) -> list[Trajectory] | None:
         """
-        Get a batch from specified model_tag instance, or from default if not specified
+        Get trajectories from specified model_tag instance, or from default if not specified
 
         Args:
-            batch_size: Size of the batch to retrieve
-            model_tag: ModelTag to get batch from. If None, uses default model_tag
+            model_tag: ModelTag to get trajectories from. If None, uses default model_tag
 
         Returns:
-            Batch from the specified instance, or None if not enough samples
+            List of trajectories from the specified instance, or None if not enough samples
         """
         if model_tag is None:
-            return self._get_batch_any()
+            return self._get_trajectories_any()
 
         assert model_tag in self._instances, f"Model tag {model_tag} not found in instances"
 
-        return self._instances[model_tag].get_batch()
+        return self._instances[model_tag].get_trajectories()
 
-    def _get_batch_any(self) -> Batch | None:
+    def _get_trajectories_any(self) -> list[Trajectory] | None:
         """
-        Get a batch from any available instance that contains enough trajectories to form a batch
-
-        Args:
+        Get trajectories from any available instance that has enough trajectories
 
         Returns:
-            Batch from any instance that contains enough trajectories to form a batch, or None if no instance has enough
+            List of trajectories from any instance, or None if no instance has enough
         """
-        for model_tag in self._instances.keys():
-            batch = self.get_batch(model_tag)
-            if batch is not None:
-                return batch
+        for model_tag in self._instances:
+            trajectories = self.get_trajectories(model_tag)
+            if trajectories is not None:
+                return trajectories
 
         return None
 

@@ -21,10 +21,10 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 import aiohttp
-import requests
+import requests  # type: ignore[import-untyped]
 from omegaconf import DictConfig
 
 from ..base_module import NexRLModule
@@ -33,7 +33,9 @@ from ..nexrl_types import ModelTag
 
 if TYPE_CHECKING:
     from ..data_loader import BaseDataLoader
+    from ..tinker.tinker_service_holder import TinkerServiceHolder
     from ..trajectory_pool import TrajectoryPool
+    from ..weaver.weaver_service_holder import WeaverServiceHolder
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +89,16 @@ class WeightSyncController(NexRLModule):
         self._rollout_services[model_tag] = RolloutServiceState(
             model_name=self._inference_service_config.model,
             weight_type=self._inference_service_config.weight_type,
-            weight_path=self._config.sync_weight_path,
+            weight_path=self._config.get("sync_weight_path", ""),
             backend=self._inference_service_config.backend,
-            base_url=self._inference_service_config.base_url,
+            base_url=self._inference_service_config.get("base_url", ""),
         )
 
         # References to other components (will be set via dependency injection)
         self._trajectory_pool: "TrajectoryPool" = None  # type: ignore  # Will be set by controller
         self._dataloader: "BaseDataLoader" = None  # type: ignore  # Will be set by controller
+        self._tinker_service_holder: "TinkerServiceHolder | None" = None  # For Tinker backend
+        self._weaver_service_holder: "WeaverServiceHolder | None" = None  # For Weaver backend
 
         logger.info(f"WeightSyncController initialized with sync_mode: {self._sync_mode}")
 
@@ -105,10 +109,20 @@ class WeightSyncController(NexRLModule):
         self._trajectory_pool = trajectory_pool
         self._dataloader = dataloader
 
+    def set_tinker_service_holder(self, tinker_service_holder: "TinkerServiceHolder") -> None:
+        """Set reference to Tinker service holder (for Tinker backend only)"""
+        self._tinker_service_holder = tinker_service_holder
+        logger.info("TinkerServiceHolder reference set in WeightSyncController")
+
+    def set_weaver_service_holder(self, weaver_service_holder: "WeaverServiceHolder") -> None:
+        """Set reference to Weaver service holder (for Weaver backend only)"""
+        self._weaver_service_holder = weaver_service_holder
+        logger.info("WeaverServiceHolder reference set in WeightSyncController")
+
     def check_rollout_service_status(self, model_tag: ModelTag) -> Literal["continue", "block"]:
         """
         Check if rollout service should continue or block for the given model.
-        Called by LLMServiceClient before _generate and _completion calls.
+        Called by InferenceServiceClient before generate and completion calls.
 
         Args:
             model_tag: Model tag to check status for
@@ -124,7 +138,7 @@ class WeightSyncController(NexRLModule):
 
         rollout_service = self._rollout_services[model_tag]
 
-        with rollout_service._lock:
+        with rollout_service._lock:  # pylint: disable=protected-access
             if rollout_service.state in ["need_sync", "syncing"]:
                 return "block"
             else:
@@ -162,7 +176,7 @@ class WeightSyncController(NexRLModule):
             Current rollout model version
         """
         rollout_service = self._rollout_services[model_tag]
-        with rollout_service._lock:
+        with rollout_service._lock:  # pylint: disable=protected-access
             return rollout_service.rollout_model_version
 
     def trajectory_pool_notify_batch_ready(self, model_tag: ModelTag) -> None:
@@ -182,7 +196,7 @@ class WeightSyncController(NexRLModule):
 
         logger.info(f"Trajectory pool batch ready for {model_tag}, sync mode: {self._sync_mode}")
 
-        with rollout_service._lock:
+        with rollout_service._lock:  # pylint: disable=protected-access
             # Check if we need to block dataloader and trajectory pool for weight sync
             if self._sync_mode == "sync" or (
                 self._sync_mode == "batch-async"
@@ -220,8 +234,6 @@ class WeightSyncController(NexRLModule):
         Args:
             worker_name: Name of the training worker
             model_tag: Model tag that was trained
-            new_weight_version: New weight version number
-            batch_info: Metadata about the completed batch
         """
         assert (
             model_tag in self._rollout_services
@@ -230,7 +242,7 @@ class WeightSyncController(NexRLModule):
         rollout_service = self._rollout_services[model_tag]
         need_sync = False
 
-        with rollout_service._lock:
+        with rollout_service._lock:  # pylint: disable=protected-access
             assert model_tag in self._rollout_services
             rollout_service.train_model_version += 1
 
@@ -250,7 +262,7 @@ class WeightSyncController(NexRLModule):
             if not success:
                 raise RuntimeError(f"Weight synchronization failed for {model_tag}")
 
-            with rollout_service._lock:
+            with rollout_service._lock:  # pylint: disable=protected-access
                 rollout_service.rollout_model_version = rollout_service.train_model_version
                 rollout_service.state = "running"
 
@@ -289,9 +301,8 @@ class WeightSyncController(NexRLModule):
             True if sync successful, False otherwise
         """
         if self._config.sync_method == "network":
-            raise NotImplementedError("Network-based weight synchronization is not implemented yet")
             rollout_service = self._rollout_services[model_tag]
-            if rollout_service.backend == "vllm" or rollout_service.backend == "sglang":
+            if rollout_service.backend in ("vllm", "sglang"):
                 t0 = time.time()
                 response = requests.post(
                     rollout_service.base_url + "/update_weights",
@@ -300,11 +311,13 @@ class WeightSyncController(NexRLModule):
                         "weight_type": rollout_service.weight_type,
                         "weight_path": rollout_service.weight_path,
                     },
-                    timeout=200,
+                    timeout=600,
                 )
                 t1 = time.time()
                 logger.info(f"Finish updating weights in {t1 - t0} seconds")
-                assert response.status_code == 200, f"Failed to update weights: {response.text}"
+                assert (
+                    response is not None and response.status_code == 200
+                ), f"Failed to update weights: {response.text if response else 'No response'}"
             else:
                 raise ValueError(f"Unsupported backend: {rollout_service.backend}")
             return True
@@ -320,23 +333,13 @@ class WeightSyncController(NexRLModule):
                 )
                 assert response.status_code == 200, f"Failed to get worker list: {response.text}"
 
-                # Parse response and filter workers by model_id
+                # Parse response and extract worker URLs
                 response_data = response.json()
-                all_workers = response_data.get("workers", [])
-
-                # Filter workers where model_id matches the target weight_path
-                matched_workers = [
-                    worker
-                    for worker in all_workers
-                    if worker.get("metadata", {}).get("model_id") == rollout_service.model_name
-                ]
-
-                # Extract URLs from matched workers
-                worker_urls = [worker.get("url") for worker in matched_workers]
+                workers = response_data.get("workers", [])
+                worker_urls = [worker.get("url") for worker in workers]
 
                 logger.info(
-                    f"Found {len(all_workers)} total workers, {len(worker_urls)} matched workers to update: {worker_urls}, "
-                    f"model_name: {rollout_service.model_name}, "
+                    f"Found {len(worker_urls)} total workers to update: {worker_urls}, "
                     f"weight_path: {rollout_service.weight_path}"
                 )
 
@@ -375,6 +378,14 @@ class WeightSyncController(NexRLModule):
             return True
         elif self._config.sync_method == "mock":
             time.sleep(2)
+            return True
+        elif self._config.sync_method == "tinker":
+            assert self._tinker_service_holder is not None, "TinkerServiceHolder not set"
+            self._tinker_service_holder.update_sampling_client()
+            return True
+        elif self._config.sync_method == "weaver":
+            assert self._weaver_service_holder is not None, "WeaverServiceHolder not set"
+            self._weaver_service_holder.update_sampling_client()
             return True
         else:
             raise ValueError(f"Unsupported sync method: {self._config.sync_method}")

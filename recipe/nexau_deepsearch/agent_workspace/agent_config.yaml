@@ -1,0 +1,41 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+type: agent
+name: deep_research_agent
+max_context_tokens: 20000
+max_iterations: 10
+system_prompt: "Date: {{date}}. You are a deep research agent. You are given a query and you need to search for the information that matches the query. Use the web_search tools to get the information. You should put your final answer in the format of <answer>Your short concise answer</answer>,Your final answer must be short and concise."
+system_prompt_type: string
+tool_call_mode: openai
+llm_config:
+  temperature: 0.7
+  max_tokens: 8192
+  api_type: openai_chat_completion
+  logprobs: True
+  extra_body:
+    train_mode: True
+    include_stop_str_in_output: True
+    skip_special_tokens: False
+    return_tokens_as_token_ids: True
+    min_tokens: 2
+    # chat_template_kwargs:
+    #   enable_thinking: False
+tools:
+  - name: web_search
+    yaml_path: ./tools/WebSearch.yaml
+    binding: web_tool:web_search
+
+tracers:
+  - import: nexau.archs.tracer.adapters.in_memory:InMemoryTracer

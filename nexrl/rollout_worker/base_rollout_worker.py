@@ -28,7 +28,6 @@ from omegaconf import DictConfig
 from ..base_module import NexRLModule
 from ..data_loader import BaseDataLoader
 from ..executor import execute
-from ..llm_service_client import LLMServiceClient
 from ..nexrl_types import Trajectory
 from ..trajectory_pool import TrajectoryPool
 from ..validator import Validator
@@ -50,7 +49,10 @@ class BaseRolloutWorker(NexRLModule, ABC):
 
     def __init__(self, config: DictConfig):
         """
-        All necessary initialization work. Including initializing LLM service client based on `config`.
+        All necessary initialization work.
+
+        Note: Inference service client initialization is deferred to init_inference_service_client()
+        which is called by the controller after all dependencies are set up.
 
         Args:
             config: Configuration file
@@ -60,8 +62,8 @@ class BaseRolloutWorker(NexRLModule, ABC):
         self._stop_event = threading.Event()
         # These will be set before run() is called, so they're never actually None during operation
         self._thread: threading.Thread = None  # type: ignore  # Set in run()
-        # Initialize LLM service client based on config
-        self._llm_client = LLMServiceClient(config)
+        # Inference service client will be initialized via init_inference_service_client() if needed
+        self._inference_client = None  # type: ignore  # Will be set if need_llm_inference=True
 
         self._trajectory_pool: TrajectoryPool = None  # type: ignore  # Set via set_module_references()
         self._dataloader: BaseDataLoader = None  # type: ignore  # Set via set_module_references()
@@ -89,7 +91,31 @@ class BaseRolloutWorker(NexRLModule, ABC):
         self._weight_sync_controller = weight_sync_controller
         self._validate_dataloader = validate_dataloader
         self._validator = validator
-        self._llm_client.set_weight_sync_controller(weight_sync_controller)
+        if self._inference_client is not None:
+            self._inference_client.set_weight_sync_controller(weight_sync_controller)
+
+    def init_inference_service_client(self, service_holder=None):
+        """
+        Initialize inference service client for all backends.
+        Called by controller after dependencies are set up.
+
+        Args:
+            service_holder: Shared backend-specific service holder (Tinker/Weaver)
+        """
+        # Check if this worker needs LLM inference
+        need_llm_inference = self._config.get("need_llm_inference", False)
+        if not need_llm_inference:
+            logger.info("LLM inference not needed for this worker, skipping initialization")
+            return
+
+        from ..utils.init_utils import create_inference_service_client
+
+        self._inference_client = create_inference_service_client(
+            backend=self._config.inference_service.backend,
+            config=self._config,
+            tinker_service_holder=service_holder,
+            weaver_service_holder=service_holder,
+        )
 
     def run(self):
         """
@@ -104,9 +130,9 @@ class BaseRolloutWorker(NexRLModule, ABC):
         self._thread.start()
 
     @abstractmethod
-    def step(self, task: dict[str, Any]) -> str | None:
+    def rollout(self, task: dict[str, Any]) -> str | None:
         """
-        Single step operation, defined by user. Derived worker classes should override
+        Single rollout operation, defined by user. Derived worker classes should override
         this function to implement user-defined worker operations.
 
         The implementation should call _put_trajectory() and return its result.
@@ -115,7 +141,6 @@ class BaseRolloutWorker(NexRLModule, ABC):
         Returns:
             str: 'success', 'fail', 're-rollout' (from _put_trajectory), or None if processing failed
         """
-        pass
 
     def stop(self):
         """Stop the worker"""
@@ -139,7 +164,7 @@ class BaseRolloutWorker(NexRLModule, ABC):
                 # If the _next_task is None, the loop will end.
                 # The activity tracker will mark the module as quiescent.
                 while self._next_task is not None:
-                    result = self.step(copy.deepcopy(self._next_task))
+                    result = self.rollout(copy.deepcopy(self._next_task))
                     # If not re-rollout, get the next task
                     # Otherwise, the next task will not change.
                     if result != "re-rollout":
@@ -194,7 +219,7 @@ class BaseRolloutWorker(NexRLModule, ABC):
         self._is_running_validate = False
 
 
-def validate_trajectory(trajectory: Trajectory) -> bool:
+def validate_trajectory(trajectory: Trajectory) -> bool:  # pylint: disable=unused-argument
     """
     Validate the trajectory.
     """

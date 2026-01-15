@@ -18,14 +18,15 @@ Kubernetes utilities for NexRL CLI
 
 import json
 import logging
+import os
 import subprocess
 import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# NexRL system configuration uses a fixed namespace
-NEXRL_SYSTEM_NAMESPACE = "nexrl"
+# NexRL system configuration uses a fixed namespace (configurable via env var)
+NEXRL_SYSTEM_NAMESPACE = os.getenv("NEXRL_SYSTEM_NAMESPACE", "nexrl")
 
 
 def check_kubectl_available() -> bool:
@@ -203,7 +204,7 @@ def wait_for_volcanojob(name: str, namespace: str, timeout: int = 300) -> bool:
 
 
 def get_configmap(name: str, namespace: str) -> dict[str, Any] | None:
-    """Get ConfigMap"""
+    """Get ConfigMap (returns None if not found - this is normal for dev/testing)"""
     try:
         result = subprocess.run(
             ["kubectl", "get", "configmap", name, "-n", namespace, "-o", "json"],
@@ -214,15 +215,18 @@ def get_configmap(name: str, namespace: str) -> dict[str, Any] | None:
         if result.returncode == 0:
             return json.loads(result.stdout)
         else:
-            logger.error(f"Failed to get ConfigMap {name}: {result.stderr}")
+            # ConfigMap not found is normal - we fall back to env vars
+            logger.debug(
+                f"ConfigMap {name} not found in namespace {namespace} (using env vars/defaults)"
+            )
             return None
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error(f"Error getting ConfigMap: {e}")
+        logger.debug(f"Could not get ConfigMap {name}: {e}")
         return None
 
 
 def get_secret(name: str, namespace: str) -> dict[str, Any] | None:
-    """Get Secret"""
+    """Get Secret (returns None if not found - this is normal)"""
     try:
         result = subprocess.run(
             ["kubectl", "get", "secret", name, "-n", namespace, "-o", "json"],
@@ -233,10 +237,14 @@ def get_secret(name: str, namespace: str) -> dict[str, Any] | None:
         if result.returncode == 0:
             return json.loads(result.stdout)
         else:
-            logger.error(f"Failed to get Secret {name}: {result.stderr}")
+            # Secret not found is normal - we fall back to env vars
+            # Use debug level so it doesn't show by default
+            logger.debug(
+                f"Secret {name} not found in namespace {namespace} (this is expected when using env vars)"
+            )
             return None
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error(f"Error getting Secret: {e}")
+        logger.debug(f"Could not get Secret {name}: {e}")
         return None
 
 
@@ -466,9 +474,9 @@ def run_kubectl_command(
             timeout=timeout,
         )
         return result
-    except subprocess.TimeoutExpired as e:
+    except subprocess.TimeoutExpired:
         logger.error(f"kubectl command timed out: {' '.join(cmd)}")
         raise
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         logger.error("kubectl not found")
         raise

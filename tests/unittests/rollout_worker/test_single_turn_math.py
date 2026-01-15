@@ -13,16 +13,13 @@
 # limitations under the License.
 
 """
-Tests for SingleTurnMathAgent using real implementation with mocked LLM client
+Tests for SingleTurnMathAgent using real implementation with mocked inference client
 """
 
-from unittest.mock import patch
-
-import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
-from nexrl.mock import MockLLMServiceClient
+from nexrl.mock import MockInferenceServiceClient
 from nexrl.rollout_worker.single_turn_math import SingleTurnMathAgent
 
 
@@ -37,28 +34,28 @@ def single_turn_math_config(rollout_worker_config):
 
 @pytest.fixture
 def single_turn_math_agent(single_turn_math_config):
-    """Create SingleTurnMathAgent with MockLLMServiceClient"""
-    # Patch LLMServiceClient to return MockLLMServiceClient instead
-    with patch("nexrl.rollout_worker.base_rollout_worker.LLMServiceClient", MockLLMServiceClient):
-        worker = SingleTurnMathAgent(single_turn_math_config)
+    """Create SingleTurnMathAgent with MockInferenceServiceClient"""
+    worker = SingleTurnMathAgent(single_turn_math_config)
+    # Manually set the inference client for testing
+    worker._inference_client = MockInferenceServiceClient(single_turn_math_config)
     return worker
 
 
 def test_single_turn_math_agent_initialization(single_turn_math_agent):
     """Test SingleTurnMathAgent initialization"""
     assert single_turn_math_agent._config is not None
-    assert single_turn_math_agent._llm_client is not None
-    assert isinstance(single_turn_math_agent._llm_client, MockLLMServiceClient)
+    assert single_turn_math_agent._inference_client is not None
+    assert isinstance(single_turn_math_agent._inference_client, MockInferenceServiceClient)
 
 
-def test_single_turn_math_agent_step_missing_prompt(single_turn_math_agent):
-    """Test SingleTurnMathAgent step with missing prompt"""
+def test_single_turn_math_agent_rollout_missing_prompt(single_turn_math_agent):
+    """Test SingleTurnMathAgent rollout with missing prompt"""
     # Mock the _put_trajectory method
     single_turn_math_agent._put_trajectory = lambda x: "id"
 
-    # Execute a step without prompt
+    # Execute a rollout without prompt
     task = {"id": 1, "reward_model": {"ground_truth": "4"}}
-    result = single_turn_math_agent.step(task)
+    result = single_turn_math_agent.rollout(task)
 
     # Should return None when prompt is missing
     assert result is None

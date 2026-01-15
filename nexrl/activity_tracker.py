@@ -55,10 +55,10 @@ class ActivityTracker:
             project_name=self._config.project_name,
             experiment_name=self._config.experiment_name,
             default_backend=self._config.logger.backend,
-            config=OmegaConf.to_container(self._config, resolve=True),
+            config=OmegaConf.to_container(config, resolve=True),
         )
 
-    def start(self, module: str, work: str) -> str:
+    def start(self, module: str, work: str) -> str:  # pylint: disable=unused-argument
         token = str(uuid.uuid4())
         with self._cv:
             self._count += 1
@@ -137,8 +137,6 @@ class ActivityTracker:
         Returns:
             str: Error ID of the reported exception
         """
-        from .error_reporter import ErrorSeverity
-
         severity = severity or ErrorSeverity.ERROR
         return self._error_reporter.report_exception(module, work, exception, severity)
 
@@ -221,8 +219,6 @@ class ActivityTracker:
 
     def _report_module_death(self, module_name: str, reason: str) -> None:
         """Report a confirmed module death"""
-        from .error_reporter import ErrorSeverity
-
         self._error_reporter.report_error(
             module_name=module_name,
             work_context="system_monitoring",
@@ -265,6 +261,13 @@ class ActivityTracker:
         with self._cv:
             self._current_training_step = step
 
+        if step == 1 and self.experiment_logger.feishu_logger is not None:
+            self.experiment_logger.feishu_logger.post(
+                content=f'"Experiment: {self._config.project_name}/{self._config.experiment_name}"'
+                f"begin training, wandb: {self.experiment_logger.wandb_url} ",
+                title="Begin!",
+            )
+
     def get_training_step(self) -> int:
         """
         Get the current training step
@@ -276,7 +279,12 @@ class ActivityTracker:
             return self._current_training_step
 
     def experiment_logger_post(self, backend: str, **kwargs) -> None:
-        if backend == "wandb":
+        if backend == "feishu":
+            if self.experiment_logger.feishu_logger is not None:
+                self.experiment_logger.feishu_logger.post(
+                    content=kwargs["content"], title=kwargs["title"]
+                )
+        elif backend == "wandb":
             if "step" not in kwargs:
                 kwargs["step"] = self._current_training_step
             self.experiment_logger.log(data=kwargs["data"], step=kwargs["step"])
@@ -401,6 +409,9 @@ class ActivityTrackerProxy:
 
         if backend == "wandb":
             assert "data" in kwargs, "data is required for wandb"
+        elif backend == "feishu":
+            assert "content" in kwargs, "content is required for feishu"
+            assert "title" in kwargs, "title is required for feishu"
         else:
             raise ValueError(f"Unsupported backend: {backend}")
 

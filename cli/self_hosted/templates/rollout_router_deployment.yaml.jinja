@@ -1,0 +1,119 @@
+{#
+Copyright (c) Nex-AGI. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{name}}
+  namespace: {{namespace}}
+  labels:
+    app: {{name}}
+    component: rollout-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{name}}
+  template:
+    metadata:
+      labels:
+        app: {{name}}
+        component: rollout-router
+    spec:
+      schedulerName: volcano
+      {% if service_account_name %}
+      serviceAccountName: {{service_account_name}}
+      {% endif %}
+      containers:
+      - name: rollout-router
+        image: {{image}}
+        imagePullPolicy: IfNotPresent
+        command:
+        - python
+        - -m
+        - sglang_router.launch_router
+        - --port
+        - "12345"
+        - --host
+        - "0.0.0.0"
+        - --service-discovery
+        - --selector
+        - model={{served_model_name}}
+        - --service-discovery-namespace
+        - {{namespace}}
+        - --service-discovery-port
+        - "8000"
+        ports:
+        - containerPort: 12345
+          name: http
+          protocol: TCP
+        {% if redis_host %}
+        env:
+        - name: REDIS_HOST
+          value: "{{redis_host}}"
+        - name: REDIS_PORT
+          value: "{{redis_port}}"
+        {% if redis_username %}
+        - name: REDIS_USERNAME
+          value: "{{redis_username}}"
+        {% endif %}
+        {% if redis_password %}
+        - name: REDIS_PASSWORD
+          value: "{{redis_password}}"
+        {% endif %}
+        {% endif %}
+        resources:
+          requests:
+            cpu: "{{cpu|default('8')}}"
+            memory: "{{memory|default('16Gi')}}"
+          limits:
+            cpu: "{{cpu|default('8')}}"
+            memory: "{{memory|default('16Gi')}}"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 12345
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 12345
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{name}}-svc
+  namespace: {{namespace}}
+  labels:
+    app: {{name}}
+    component: rollout-router
+spec:
+  type: ClusterIP
+  ports:
+  - port: 12345
+    targetPort: 12345
+    protocol: TCP
+    name: http
+  selector:
+    app: {{name}}

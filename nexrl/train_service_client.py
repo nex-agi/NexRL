@@ -67,7 +67,6 @@ class TrainServiceClient(ABC):
         Returns:
             Response dictionary with initialization status
         """
-        pass
 
     @abstractmethod
     def init_model(self) -> dict[str, Any]:
@@ -77,7 +76,6 @@ class TrainServiceClient(ABC):
         Returns:
             Response dictionary with model initialization status
         """
-        pass
 
     @abstractmethod
     def update_actor(self, batch: dict) -> dict[str, Any]:
@@ -90,7 +88,6 @@ class TrainServiceClient(ABC):
         Returns:
             Response dictionary with meta_info and metrics
         """
-        pass
 
     @abstractmethod
     def compute_log_prob(self, batch: dict) -> dict[str, Any]:
@@ -103,7 +100,6 @@ class TrainServiceClient(ABC):
         Returns:
             Dictionary containing log probabilities
         """
-        pass
 
     @abstractmethod
     @contextmanager
@@ -113,7 +109,6 @@ class TrainServiceClient(ABC):
 
         Yields control for actor-related operations within the context.
         """
-        pass
 
     @abstractmethod
     def save_checkpoint(
@@ -139,7 +134,6 @@ class TrainServiceClient(ABC):
         Returns:
             Response dictionary with save status
         """
-        pass
 
     @abstractmethod
     def load_checkpoint(
@@ -156,4 +150,3 @@ class TrainServiceClient(ABC):
         Returns:
             Response dictionary with load status
         """
-        pass

@@ -24,7 +24,7 @@ def test_base_rollout_worker_initialization(rollout_worker_config):
     worker = MockRolloutWorker(rollout_worker_config)
 
     assert worker._config is not None
-    assert worker._llm_client is not None
+    assert worker._inference_client is not None
     assert worker._stop_event is not None
 
 

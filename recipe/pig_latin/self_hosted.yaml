@@ -1,0 +1,88 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+defaults:
+  - common
+  - _self_
+
+project_name: "NexRL-self-hosted"
+experiment_name: "self-hosted-pig_latin"
+
+#==========================================
+# TRAINER CONFIGURATION (Self-hosted-specific)
+#==========================================
+
+trainer:
+  type: "self_hosted_cross_entropy"
+  checkpoint_path: "${oc.env:EXPERIMENT_PATH}/ckpt"
+  sync_weight_path: "${oc.env:EXPERIMENT_PATH}/sync_weight"
+  remove_previous_ckpt: false
+
+#==========================================
+# WEIGHT MANAGEMENT (Self-hosted-specific)
+#==========================================
+
+weight:
+  sync_method: "disk"
+  sync_weight_path: ${trainer.sync_weight_path}
+
+#==========================================
+# SERVICE CONFIGURATION (Self-hosted-specific)
+#==========================================
+
+service:
+  train_service:
+    model_tag: "default"
+    backend: http
+    world_size: 8
+    url: "http://${oc.env:API_SERVER_URL}:8000"
+
+    actor:
+      checkpoint_manager: dcp
+
+      model:
+        path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
+        use_remove_padding: true
+
+      micro_batch_size: 4
+      grad_clip: 1.0
+      loss_agg_mode: token-mean
+
+      optim:
+        lr: 1e-4
+        lr_warmup_steps_ratio: 0.1
+        warmup_style: linear
+
+      fsdp_config:
+        wrap_policy:
+          min_num_params: 0
+        param_offload: false
+        grad_offload: false
+        optimizer_offload: false
+        fsdp_size: -1
+
+#==========================================
+# RESOURCE CONFIGURATION (Self-hosted-specific)
+#==========================================
+
+resource:
+  train:
+    actor-1:
+      world_size: 1
+      gpus_per_pod: 8
+      memory_per_gpu: 200
+
+  agent:
+    num_workers: 0
+    agents_per_worker: 32

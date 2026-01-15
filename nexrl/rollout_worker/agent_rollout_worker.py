@@ -14,31 +14,58 @@
 
 """
 Agent Rollout Worker for NexRL framework
-Base class for agent-based rollout workers that process agent outputs into trajectories.
+Unified rollout worker supporting single-turn and multi-turn agents.
+Trajectory processing is handled by trainers.
 """
 
 import logging
-from abc import abstractmethod
 from typing import Any
 
-import torch
 from omegaconf import DictConfig
 
+from ..agent import BaseAgent
 from ..nexrl_types import Trajectory
-from ..utils.torch_functional import compute_position_id_with_mask, padding_data
 from .base_rollout_worker import BaseRolloutWorker
 
 logger = logging.getLogger(__name__)
 
 
+def create_agent(agent_cls_name: str, config: DictConfig) -> BaseAgent:
+    """
+    Factory function to create an agent instance.
+
+    Args:
+        agent_cls_name: Name of the agent class (e.g., "single_turn_math", "nexau")
+        config: Configuration for the agent
+
+    Returns:
+        Agent instance
+    """
+    from ..agent import SingleTurnMathAgent
+
+    agent_registry = {
+        "single_turn_math": SingleTurnMathAgent,
+    }
+
+    if agent_cls_name not in agent_registry:
+        raise ValueError(
+            f"Unknown agent class: {agent_cls_name}. " f"Available: {list(agent_registry.keys())}"
+        )
+
+    return agent_registry[agent_cls_name](config)
+
+
 class AgentRolloutWorker(BaseRolloutWorker):
     """
-    Base class for agent-based rollout workers.
+    Unified agent-based rollout worker.
 
-    This class provides common functionality for processing agent outputs into trajectories,
-    including token processing, padding, and trajectory construction.
+    Uses an agent_cls instance for task-specific logic and creates
+    simple trajectories with only nexrl_train fields. Trajectory processing
+    (padding, tensor creation, etc.) is handled by trainers.
 
-    Derived classes should override the _agent_run method to implement specific agent logic.
+    Supports both single-turn and multi-turn agents:
+    - Single-turn agents: agent.run() returns a single dict -> 1 trajectory
+    - Multi-turn agents: agent.run() returns a list of dicts -> multiple trajectories
     """
 
     def __init__(self, config: DictConfig):
@@ -46,221 +73,123 @@ class AgentRolloutWorker(BaseRolloutWorker):
         Initialize the Agent Rollout Worker.
 
         Args:
-            config: Configuration containing data settings for max lengths
+            config: Configuration containing:
+                - agent_cls: Name of the agent class to use
         """
         super().__init__(config)
-        # Configuration parameters
-        self._max_prompt_length = config.get("max_prompt_length", 4096)
-        self._max_response_length = config.get("max_response_length", 2048)
 
-    def _process_agent_results(
-        self, prompt_messages: list[dict[str, Any]], response_tokens: list[int]
-    ) -> dict[str, torch.Tensor]:
+        # Create agent instance
+        agent_cls_name = config.get("agent_cls", "single_turn_math")
+        self._agent = create_agent(agent_cls_name, config)
+
+    def rollout(self, task: dict[str, Any]) -> str | None:
         """
-        Process prompt messages and response tokens to generate input_ids, attention_mask,
-        position_ids, loss_mask, etc.
+        Execute agent rollout and create trajectories.
+
+        Supports both single-turn and multi-turn agents:
+        - Single-turn: agent.run() returns a dict (wrapped as 1-element list)
+        - Multi-turn: agent.run() returns a list of dicts (one per turn)
+
+        Each agent result is converted to a simple trajectory containing:
+        - nexrl_train fields (prompt_tokens, response_tokens, response_logprobs)
+        - reward, score, finish_reason
+        - metadata from task
+
+        Trajectory processing (padding, tensors) is handled by trainers.
 
         Args:
-            prompt_messages: List of message dictionaries in chat format
-            response_tokens: List of response token IDs
-
-        Returns:
-            dict containing:
-                - input_ids: concatenated prompt and response token IDs
-                - attention_mask: attention mask for the sequence
-                - position_ids: position IDs for the sequence
-                - loss_mask: mask indicating which tokens to compute loss on
-                - prompts: padded prompt token IDs only
-                - responses: padded response token IDs only
-        """
-        tokenizer = self._llm_client.tokenizer
-        pad_token_id = tokenizer.pad_token_id
-
-        # Apply chat template to prompt messages
-        prompt_with_chat_template = tokenizer.apply_chat_template(
-            prompt_messages,
-            add_generation_prompt=True,
-            tokenize=False,
-            add_special_tokens=True,
-        )
-
-        # Tokenize prompt
-        prompt_tokens = tokenizer(
-            prompt_with_chat_template,
-            return_tensors="pt",
-            add_special_tokens=False,
-        )["input_ids"][0].tolist()
-
-        # Example:
-        # max_prompt_length: 10, max_response_length: 10
-        # prompt_tokens: [101, 102, 103, 104, 105]
-        # prompt_input_ids: [0, 0, 0, 0, 0, 101, 102, 103, 104, 105]
-        # prompt_attention_mask: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
-        # prompt_loss_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-        # response_tokens: [106, 107, 108, 109, 110]
-        # response_input_ids: [106, 107, 108, 109, 110, 0, 0, 0, 0, 0]
-        # response_attention_mask: [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
-        # response_loss_mask: [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
-
-        # input_ids: [0, 0, 0, 0, 0, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 0, 0, 0, 0, 0]
-        # attention_mask: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
-        # loss_mask: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0]
-        # prompts: [0, 0, 0, 0, 0, 101, 102, 103, 104, 105]
-        # responses: [106, 107, 108, 109, 110, 0, 0, 0, 0, 0]
-
-        # position_ids: [0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 9, 9, 9]
-
-        # Pad prompt tokens and masks (left padding)
-        prompt_input_ids = padding_data(
-            prompt_tokens,
-            max_length=self._max_prompt_length,
-            pad_token_id=pad_token_id,
-            left_pad=True,
-            truncation="error",
-        )
-        prompt_attention_mask = padding_data(
-            torch.ones((1, len(prompt_tokens)), dtype=torch.int),
-            max_length=self._max_prompt_length,
-            pad_token_id=0,
-            left_pad=True,
-            truncation="error",
-        )
-        prompt_loss_mask = torch.zeros_like(prompt_input_ids, dtype=torch.int)
-
-        # Pad response tokens and masks (right padding)
-        response_input_ids = padding_data(
-            response_tokens,
-            max_length=self._max_response_length,
-            pad_token_id=pad_token_id,
-            left_pad=False,
-            truncation="error",
-        )
-        response_attention_mask = padding_data(
-            torch.ones((1, len(response_tokens)), dtype=torch.int),
-            max_length=self._max_response_length,
-            pad_token_id=0,
-            left_pad=False,
-            truncation="error",
-        )
-        response_loss_mask = padding_data(
-            torch.ones((1, len(response_tokens)), dtype=torch.int),
-            max_length=self._max_response_length,
-            pad_token_id=0,
-            left_pad=False,
-            truncation="error",
-        )
-
-        # Concatenate prompt and response
-        input_ids = torch.cat([prompt_input_ids, response_input_ids], dim=1)
-        attention_mask = torch.cat([prompt_attention_mask, response_attention_mask], dim=1)
-        loss_mask = torch.cat([prompt_loss_mask, response_loss_mask], dim=1)
-
-        # Compute position_ids from attention_mask
-        position_ids = compute_position_id_with_mask(attention_mask)
-
-        return {
-            "input_ids": input_ids.squeeze(0),  # Remove batch dimension
-            "attention_mask": attention_mask.squeeze(0),
-            "position_ids": position_ids.squeeze(0),
-            "loss_mask": loss_mask.squeeze(0),
-            "prompts": prompt_input_ids.squeeze(0),
-            "responses": response_input_ids.squeeze(0),
-        }
-
-    def step(self, task: dict[str, Any]) -> str | None:
-        """
-        Single step operation for agent-based rollout.
-
-        The _agent_run function is exactly what an agent will originally do.
-        While the step function handles the remaining work that organize the agent execution results into a trajectory.
-
-        Args:
-            task: A dictionary containing:
-                - 'prompt': list of message dictionaries in chat format, e.g.,
-                    [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
-                - 'ground_truth': the correct answer
-                - 'is_val': whether this is validation data (optional, defaults to False)
-                - Other metadata fields (group_id, run_id, train_step, etc.)
+            task: A dictionary containing task information
 
         Returns:
             str: 'success', 'fail', or 're-rollout' (from _put_trajectory)
         """
-        agent_result = self._agent_run(task)
+        # Run the agent - returns dict or list of dicts
+        agent_results_raw = self._agent.run(task, self._inference_client)
 
-        if agent_result is None or agent_result.get("response") is None:
-            logger.warning("Agent finish without response, skipping")
+        if agent_results_raw is None:
+            logger.warning("Agent finished without response, skipping")
             return None
 
-        # Process tokens to get input_ids, attention_mask, etc.
-        processed_agent_result = self._process_agent_results(
-            prompt_messages=task["prompt"].tolist(),
-            response_tokens=agent_result.get("response_tokens", []),
-        )
+        # Wrap single-turn result in a list for uniform processing
+        if isinstance(agent_results_raw, dict):
+            agent_results = [agent_results_raw]
+        else:
+            agent_results = agent_results_raw
+
+        if not isinstance(agent_results, list) or len(agent_results) == 0:
+            logger.warning("Agent returned empty or invalid results, skipping")
+            return None
 
         # Extract ground_truth - could be in task directly or in reward_model dict
         ground_truth = task["reward_model"].get("ground_truth", "")
 
-        trajectory: Trajectory = {
-            # input fields
-            "ground_truth": ground_truth,
-            "group_id": task.get("group_id", ""),
-            "run_id": task.get("run_id", 0),
-            "task_id": task.get("task_id", 0),
-            "is_val": task.get("is_val", False),
-            "temperature": self._config.temperature,
-            # output fields
-            "input_ids": processed_agent_result[
-                "input_ids"
-            ],  # shape: (1, max_prompt_length + max_response_length)
-            "attention_mask": processed_agent_result[
-                "attention_mask"
-            ],  # shape: (1, max_prompt_length + max_response_length)
-            "position_ids": processed_agent_result[
-                "position_ids"
-            ],  # shape: (1, max_prompt_length + max_response_length)
-            "loss_mask": processed_agent_result[
-                "loss_mask"
-            ],  # shape: (1, max_prompt_length + max_response_length)
-            "prompts": processed_agent_result["prompts"],  # shape: (1, max_prompt_length)
-            "responses": processed_agent_result["responses"],  # shape: (1, max_response_length)
-            "finish_reason": agent_result["finish_reason"],  #
-            # reward fields
-            "reward": agent_result["reward"],
-            "score": agent_result["score"],
-            **{k: v for k, v in task.items() if k not in ["prompt", "ground_truth", "is_val"]},
-        }
+        # Process each agent result into a trajectory
+        last_result = None
+        for agent_result in agent_results:
+            # Validate agent result
+            if "nexrl_train" not in agent_result:
+                logger.warning("Agent result missing 'nexrl_train' field, skipping this turn")
+                continue
 
-        # Add any additional fields from agent_result that aren't already in trajectory
-        for k, v in agent_result.items():
-            if k not in trajectory:
-                trajectory[k] = v
+            train_fields = agent_result["nexrl_train"]
 
-        # Put trajectory into pool and return result
-        return self._put_trajectory(trajectory)
+            # Get prompt and response tokens
+            prompt_tokens = train_fields.get("prompt_tokens", [])
+            response_tokens = train_fields.get("response_tokens", [])
+            response_logprobs = train_fields.get("response_logprobs", [])
 
-    @abstractmethod
-    def _agent_run(self, task: dict[str, Any]) -> dict[str, Any] | None:
-        """
-        Execute the agent to process a single task.
+            # Create tokens and loss_mask
+            tokens = prompt_tokens + response_tokens
+            loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
 
-        This method should be overridden by derived classes to implement specific agent logic.
+            # Create Trajectory dataclass
+            trajectory = Trajectory(
+                tokens=tokens,
+                loss_mask=loss_mask,
+                reward=agent_result.get("reward", 0.0),
+                is_val=task.get("is_val", False),
+                extra_fields={
+                    # Metadata fields
+                    "ground_truth": ground_truth,
+                    "group_id": task.get("group_id", ""),
+                    "run_id": task.get("run_id", 0),
+                    "task_id": task.get("task_id", 0),
+                    "temperature": self._config.temperature,
+                    "finish_reason": agent_result.get("finish_reason", "stop"),
+                    # Logprobs field (0.0 for prompt, actual logprobs for response)
+                    "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
+                },
+            )
 
-        Args:
-            task: A dictionary containing task information including:
-                - 'prompt': list of message dictionaries
-                - 'ground_truth': the correct answer
-                - 'is_val': whether this is validation data
-                - Other metadata fields
+            # Add extra task fields (exclude prompt and ground_truth)
+            excluded_keys = {"prompt", "ground_truth", "is_val", "reward_model"}
+            for k, v in task.items():
+                if k not in excluded_keys:
+                    trajectory[k] = v
 
-        Returns:
-            dict containing agent results with keys:
-                - 'response': the generated response string
-                - 'response_tokens': list of response token IDs
-                - 'finish_reason': why generation stopped
-                - 'reward': reward score for the response
-                - 'format_correct': whether the format is correct
-                - 'correct': whether the answer is correct
-            or None if the agent run failed
-        """
-        pass
+            # Add any additional agent_result fields (exclude LLM-returned fields)
+            llm_return_keys = {
+                "id",
+                "object",
+                "created",
+                "model",
+                "choices",
+                "usage",
+                "nexrl_train",
+                "tool_calls",
+                "response",
+                "finish_reason",
+                "prompt_tokens",
+                "response_tokens",
+                "response_logprobs",
+                "loss_mask",
+                "reward",
+            }
+            for k, v in agent_result.items():
+                if k not in llm_return_keys and k not in trajectory:
+                    trajectory[k] = v
+
+            # Put trajectory into pool
+            last_result = self._put_trajectory(trajectory)
+
+        return last_result

@@ -47,7 +47,7 @@ def _is_ray_remote_method(func) -> bool:
 
 
 def execute(func: Any, *args, **kwargs) -> Any:
-    # TODO: check transferred data size and add warning if it's too large
+    # TODO: check transferred data size and add warning if it's too large  # pylint: disable=fixme
     """
     Execute a function, automatically detecting whether it's local or Ray remote.
 
@@ -74,13 +74,13 @@ def execute(func: Any, *args, **kwargs) -> Any:
             timeout = 40
             try:
                 return ray.get(func.remote(*args, **kwargs), timeout=timeout)
-            except ray.exceptions.GetTimeoutError:
+            except ray.exceptions.GetTimeoutError as exc:
                 raise TimeoutError(
                     f"Ray remote task timed out after {timeout} seconds. "
                     f"Function: {func}, Args: {args}, Kwargs: {kwargs}. "
                     f"This may indicate a deadlock, resource starvation, or unresponsive actor. "
                     f"Adjust NEXRL_RAY_GET_TIMEOUT environment variable if needed."
-                )
+                ) from exc
         else:
             return func(*args, **kwargs)
     else:

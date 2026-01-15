@@ -17,7 +17,7 @@ This module defines data structures and base classes for reward calculations
 to evaluate model responses for various problem types, including math and coding.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 # from enum import Enum

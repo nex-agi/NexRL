@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
 
 import logging
 import os
+from collections import defaultdict
+from typing import Any
+
+import numpy as np
+
+from ..nexrl_types import Trajectory  # pylint: disable=relative-beyond-top-level
 
 
 def set_logging_basic_config():
@@ -56,3 +63,60 @@ def set_logging_basic_config():
             level=level,
             format="[%(asctime)s][%(name)s][%(levelname)s] - %(message)s",
         )
+
+
+def log_rollout_metrics(trajectories: list[Trajectory], metrics: dict[str, Any]) -> None:
+    if not trajectories:
+        return
+
+    scores = [traj.get("score", {}) for traj in trajectories if "score" in traj]
+    if scores:
+        all_keys: set[str] = set()
+        for score_dict in scores:
+            if isinstance(score_dict, dict):
+                all_keys.update(score_dict.keys())
+
+        for key in all_keys:
+            values = []
+            for score_dict in scores:
+                if isinstance(score_dict, dict) and key in score_dict:
+                    val = score_dict[key]
+                    if isinstance(val, bool):
+                        val = float(val)
+                    elif isinstance(val, (int, float)):
+                        val = float(val)
+                    else:
+                        continue
+                    values.append(val)
+            if values:
+                metrics[f"rollout/{key}"] = np.mean(values)
+
+    rewards = [traj["reward"] for traj in trajectories if "reward" in traj]
+    if rewards:
+        metrics["rollout/reward_mean"] = np.mean(rewards)
+        metrics["rollout/reward_std"] = np.std(rewards)
+        metrics["rollout/reward_min"] = min(rewards)
+        metrics["rollout/reward_max"] = max(rewards)
+
+
+def log_grpo_metrics(trajectories: list[Trajectory], metrics: dict[str, Any]) -> None:
+    group_to_rewards: dict[str, list[float]] = defaultdict(list)
+    for traj in trajectories:
+        group_id = traj.get("group_id", "unknown")
+        group_to_rewards[group_id].append(traj["reward"])
+
+    group_stds = []
+    for _, rewards in group_to_rewards.items():
+        if len(rewards) > 1:
+            group_stds.append(float(np.std(rewards)))
+
+    if group_stds:
+        metrics["critic/grpo_std/mean"] = np.mean(group_stds)
+        metrics["critic/grpo_std/min"] = float(min(group_stds))
+        metrics["critic/grpo_std/max"] = float(max(group_stds))
+        metrics["critic/grpo_num_groups"] = len(group_stds)
+
+    advantages = [traj.get("advantage", 0.0) for traj in trajectories]
+    if advantages:
+        metrics["critic/advantage_mean"] = np.mean(advantages)
+        metrics["critic/advantage_std"] = np.std(advantages)

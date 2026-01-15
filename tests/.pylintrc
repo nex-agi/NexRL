@@ -1,0 +1,95 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Pylint configuration for test files
+# Includes all parent ignores plus test-specific ones
+
+[MASTER]
+# Ignore patterns for files or directories
+ignore-patterns=^\.#
+
+[MESSAGES CONTROL]
+disable=
+    # Import errors - pre-commit env != runtime env
+    import-error,
+
+    # Line length - handled by black formatter
+    line-too-long,
+
+    # Logging style - common pattern in codebase
+    logging-fstring-interpolation,
+    logging-not-lazy,
+
+    # Code duplication - often noisy
+    duplicate-code,
+
+    # Exception handling - catching broad exceptions is sometimes necessary
+    broad-exception-caught,
+
+    # Design rules - subjective, can be noisy
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-locals,
+    too-many-statements,
+    too-many-branches,
+    too-many-instance-attributes,
+    too-few-public-methods,
+    too-many-return-statements,
+    too-many-nested-blocks,
+    too-many-lines,
+
+    # Import location - sometimes needed for lazy loading or circular import avoidance
+    import-outside-toplevel,
+
+    # Documentation - can be enforced separately if needed
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+
+    # TEST-SPECIFIC IGNORES BELOW:
+    # Protected access is common and necessary in tests to verify internal implementation
+    protected-access,
+
+    # Tests often need to use global state for fixtures
+    global-statement,
+
+    # Redefined outer name is common with pytest fixtures
+    redefined-outer-name
+
+[FORMAT]
+# Maximum number of characters on a single line (disabled, black handles this)
+max-line-length=120
+
+[BASIC]
+# Good variable names which should always be accepted
+good-names=i,j,k,ex,Run,_,x,y,z,lr,rl,id,qa,qb,ip
+
+[DESIGN]
+# Maximum number of attributes for a class (default is 7)
+max-attributes=15
+
+# Maximum number of arguments for function / method (default is 5)
+max-args=10
+
+# Maximum number of locals for function / method body (default is 15)
+max-locals=25
+
+# Maximum number of return / yield for function / method body (default is 6)
+max-returns=10
+
+# Maximum number of branch for function / method body (default is 12)
+max-branches=20
+
+# Maximum number of statements in function / method body (default is 50)
+max-statements=75

@@ -19,8 +19,8 @@ from unittest.mock import patch
 import openai
 
 OAI_RM_MODEL = "gpt-4o-mini"
-OAI_RM_URL = "https://open.xiaojingai.com/v1"
-OAI_RM_API_KEY = "sk-0E8rOXMiK2BKwIW61LaDLD3fgN1v9g7GDnZ0LceIA7P877ZQ"
+OAI_RM_URL = os.getenv("OAI_RM_URL")
+OAI_RM_API_KEY = os.getenv("OAI_RM_API_KEY")
 
 ORM_USER_TEMPLATE = """
 Problem: {problem}
@@ -83,7 +83,7 @@ Explanation: These are different numbers and cannot be equivalent.
 """
 
 
-def call_oai_rm_llm(
+def call_oai_rm_llm(  # pylint: disable=redefined-outer-name
     prompt: str,
     model_output: str,
     ground_truth: str,
@@ -101,32 +101,34 @@ def call_oai_rm_llm(
     Returns:
         Generated text(s) from the model
     """
-    client = openai.OpenAI(base_url=OAI_RM_URL, api_key=OAI_RM_API_KEY, timeout=5)
-    retry_count = int(retry_count)
+    with patch.dict(os.environ, {"https_proxy": os.environ.get("PROXY_URL", "")}):
 
-    for _ in range(retry_count):
-        try:
-            response = client.chat.completions.create(
-                model=OAI_RM_MODEL,
-                messages=[
-                    {"role": "system", "content": ORM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": ORM_USER_TEMPLATE.format(
-                            problem=prompt, answer_1=model_output, answer_2=ground_truth
-                        ),
-                    },
-                ],
-                temperature=temperature,
-            )
-            print("Model Output: ", model_output)
-            print("Ground Truth: ", ground_truth)
-            print("LLM Judge: ", response.choices[0].message.content)
-            return response.choices[0].message.content
-        except Exception as exc:
-            print("Exception: ", exc)
-            time.sleep(2)
-    return None
+        client = openai.OpenAI(base_url=OAI_RM_URL, api_key=OAI_RM_API_KEY, timeout=5)
+        retry_count = int(retry_count)
+
+        for _ in range(retry_count):
+            try:
+                response = client.chat.completions.create(
+                    model=OAI_RM_MODEL,
+                    messages=[
+                        {"role": "system", "content": ORM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": ORM_USER_TEMPLATE.format(
+                                problem=prompt, answer_1=model_output, answer_2=ground_truth
+                            ),
+                        },
+                    ],
+                    temperature=temperature,
+                )
+                print("Model Output: ", model_output)
+                print("Ground Truth: ", ground_truth)
+                print("LLM Judge: ", response.choices[0].message.content)
+                return response.choices[0].message.content
+            except Exception as exc:
+                print("Exception: ", exc)
+                time.sleep(2)
+        return None
 
 
 if __name__ == "__main__":

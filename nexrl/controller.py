@@ -20,30 +20,32 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import ray
 from omegaconf import DictConfig
 
 from .activity_tracker import ActivityTracker, ActivityTrackerProxy
-from .algorithm_processor.grpo_processor import GRPOProcessor
 from .data_loader import BaseDataLoader, TorchDataLoader
 from .executor import execute
-from .mock.mock_algorithm_processor import (
-    BaseAlgorithmProcessor,
-    MockAlgorithmProcessor,
-)
 from .mock.mock_data_loader import MockDataLoader
 from .mock.mock_rollout_worker import MockRolloutWorker
 from .nexrl_types import ModelTag, NexRLRole
 from .ray_resource_manager import RayResourceManager, _get_minimal_env_vars
-from .rollout_worker.base_rollout_worker import BaseRolloutWorker
-from .rollout_worker.simple_rollout_worker import SimpleRolloutWorker
-from .rollout_worker.single_turn_math import SingleTurnMathAgent
-from .train_batch_pool import TrainBatchPool
-from .train_worker import TrainWorker
+from .rollout_worker import (
+    AgentRolloutWorker,
+    BaseRolloutWorker,
+    DefaultNexAURolloutWorker,
+    PigLatinRolloutWorker,
+    SimpleRolloutWorker,
+)
+from .trainer import BaseTrainer
+from .trainer.remote_api_cross_entropy_trainer import RemoteApiCrossEntropyTrainer
+from .trainer.remote_api_grpo_trainer import RemoteApiGrpoTrainer
+from .trainer.self_hosted_grpo_trainer import SelfHostedGrpoTrainer
 from .trajectory_pool import TrajectoryPool
-from .utils.config_utils import insert_config
+from .utils.config_utils import insert_config, use_tinker, use_weaver
 from .utils.init_utils import create_train_service_client
 from .utils.logging_utils import set_logging_basic_config
 from .validator import Validator
@@ -78,19 +80,17 @@ class NexRLController:
     When created, components will get references to other modules they need to interact with,
     used to call functions of other modules.
 
-    Interaction relationship: DataLoader <- RolloutWorkerManager -> RolloutResultsPool <- AlgorithmProcessor -> TrainBatchPool <- ... (other training components)
+    Interaction relationship: DataLoader <- RolloutWorker -> TrajectoryPool <- Trainer
     """
 
     # Public interfaces - accessible to external components
     trajectory_pool: TrajectoryPool
-    train_batch_pool: TrainBatchPool
     weight_sync_controller: WeightSyncController
     dataloader: BaseDataLoader
     validate_dataloader: BaseDataLoader
     validator: Validator
-    algorithm_processor: BaseAlgorithmProcessor
+    trainer: BaseTrainer
     rollout_workers: list[BaseRolloutWorker]
-    train_worker: TrainWorker
     activity_tracker: ActivityTracker
 
     def __init__(self, config: DictConfig):
@@ -116,6 +116,13 @@ class NexRLController:
         # Initialize activity tracker and error reporter
         self._init_activity_tracker()
 
+        self.use_tinker = use_tinker(config)
+        self.use_weaver = use_weaver(config)
+        if self.use_tinker:
+            self._init_tinker_service()
+        if self.use_weaver:
+            self._init_weaver_service()
+
         # Initialize modules using unified approach
         self._init_modules()
 
@@ -125,7 +132,7 @@ class NexRLController:
         """Start the training process"""
         logger.info("Starting NexRL training process...")
 
-        execute(self.train_worker.initialize_workers)
+        execute(self.trainer.initialize_workers)
 
         # Load initial checkpoint
         self._load_initial_checkpoint()
@@ -134,10 +141,9 @@ class NexRLController:
             self._start_validate(self._config.service.inference_service.model_tag)
 
         # Start all components
-        execute(self.train_worker.run)
+        execute(self.trainer.run)
         for worker in self.rollout_workers:
             execute(worker.run)
-        execute(self.algorithm_processor.run)
 
         if self._config.validate.validate_before_train:
             self._end_validate(self._config.service.inference_service.model_tag)
@@ -160,8 +166,11 @@ class NexRLController:
                 self._run_validate(model_tag)
 
             if self._check_finish():
-                logger.info(
-                    f"Training job finish, wandb: {self.activity_tracker.experiment_logger.wandb_url} "
+                self.activity_tracker.experiment_logger_post(
+                    backend="feishu",
+                    content=f'"Experiment: {self._config.project_name}/{self._config.experiment_name}"'
+                    f"training completed, wandb: {self.activity_tracker.experiment_logger.wandb_url} ",
+                    title="Complete!",
                 )
                 break
 
@@ -170,6 +179,12 @@ class NexRLController:
                 is_all_modules_alive = self._check_module_liveness()
                 if not is_all_modules_alive:
                     logger.error("Module liveness check detected dead modules. Terminating system.")
+                    self.activity_tracker.experiment_logger_post(
+                        backend="feishu",
+                        content=f'"Experiment: {self._config.project_name}/{self._config.experiment_name}"'
+                        f"training failed, module liveness check detected dead modules. wandb: {self.activity_tracker.experiment_logger.wandb_url} ",
+                        title="Error!",
+                    )
                     break
                 logger.info(f"Module liveness check passed at {time.time()}")
 
@@ -180,6 +195,12 @@ class NexRLController:
                     logger.error(
                         "System health check detected critical issues. Terminating system."
                     )
+                    self.activity_tracker.experiment_logger_post(
+                        backend="feishu",
+                        content=f'"Experiment: {self._config.project_name}/{self._config.experiment_name}"'
+                        f"training failed, system health check detected critical issues. wandb: {self.activity_tracker.experiment_logger.wandb_url} ",
+                        title="Error!",
+                    )
                     break
                 exception_check_counter = 0
 
@@ -188,7 +209,6 @@ class NexRLController:
             exception_check_counter += 1
 
         self._stop()
-
         logger.info("NexRL training process finished")
 
     def _stop(self):
@@ -196,10 +216,9 @@ class NexRLController:
         logger.info("Stopping NexRL training process...")
 
         # Signal all workers to stop gracefully
-        execute(self.algorithm_processor.stop)
+        execute(self.trainer.stop)
         for worker in self.rollout_workers:
             execute(worker.stop)
-        execute(self.train_worker.stop)
 
         # Wait for all activities to complete with timeout
         logger.info("Waiting for all activities to complete...")
@@ -218,23 +237,28 @@ class NexRLController:
 
     # ---- Load checkpoint functions ----
     def _load_initial_checkpoint(self):
+        if self.use_tinker or self.use_weaver:
+            return
+
+        # Create train service client
         self._train_service_client = create_train_service_client(
             self._config.service.train_service.backend,
             self._config.service.train_service.url,
             self._config.service.train_service.get("identifier", None),
+            tinker_service_holder=getattr(self, "_tinker_service_holder", None),
+            config=self._config.service.train_service.get("config", {}),
         )
 
         if self._config.resume.mode != "disable":
             self._load_resume_checkpoint()
 
-        with self._train_service_client.actor_context():
-            self._train_service_client.save_checkpoint(
-                self._config.train_worker.sync_weight_path,
-                global_step=0,
-                saved_fully_shared_ckpt=False,
-                save_weight_only=True,
-                remove_previous_ckpt=False,
-            )
+        self._train_service_client.save_checkpoint(
+            self._config.trainer.sync_weight_path,
+            global_step=0,
+            saved_fully_shared_ckpt=False,
+            save_weight_only=True,
+            remove_previous_ckpt=False,
+        )
         execute(
             self.weight_sync_controller.sync_weight_to_rollout_service,
             self._config.service.train_service.model_tag,
@@ -246,7 +270,10 @@ class NexRLController:
             logger.info("Resume mode is disabled, training from scratch")
             return
 
-        checkpoint_folder = self._config.train_worker.checkpoint_path
+        if self.use_tinker or self.use_weaver:
+            raise NotImplementedError("Tinker/Weaver backend does not support checkpoint loading")
+
+        checkpoint_folder = self._config.trainer.checkpoint_path
         if not os.path.isabs(checkpoint_folder):
             working_dir = os.getcwd()
             checkpoint_folder = os.path.join(working_dir, checkpoint_folder)
@@ -300,8 +327,8 @@ class NexRLController:
             )
             logger.info(f"Checkpoint loaded successfully: {result}")
 
-        # Update train worker's global step
-        execute(self.train_worker.set_train_step, global_step)
+        # Update trainer's global step
+        execute(self.trainer.set_train_step, global_step)
         logger.info(f"Training will resume from step {global_step}")
 
     def _find_latest_checkpoint(self, checkpoint_folder: str) -> str | None:
@@ -345,7 +372,7 @@ class NexRLController:
         """
         # Hard stop: reached or exceeded max training steps
         steps_reached = (
-            execute(self.train_worker.get_train_step) >= self._config.train_worker.total_train_steps
+            execute(self.trainer.get_train_step) >= self._config.trainer.total_train_steps
         )
         if steps_reached:
             logger.info("Finish check: steps_reached=True -> stopping")
@@ -353,17 +380,15 @@ class NexRLController:
 
         # Quiescence stop: only when all sources/sinks are drained and no work is in-flight
         rollout_pool_empty = execute(self.trajectory_pool.is_empty)
-        train_pool_empty = execute(self.train_batch_pool.is_empty)
         dataloader_done = execute(self.dataloader.is_finished)
         tracker_idle = execute(self.activity_tracker.is_quiescent)
 
         logger.debug(
             f"Finish check: rollout_pool_empty={rollout_pool_empty}, "
-            f"train_pool_empty={train_pool_empty}, dataloader_done={dataloader_done}, "
-            f"tracker_idle={tracker_idle}"
+            f"dataloader_done={dataloader_done}, tracker_idle={tracker_idle}"
         )
 
-        return rollout_pool_empty and train_pool_empty and dataloader_done and tracker_idle
+        return rollout_pool_empty and dataloader_done and tracker_idle
 
     def _check_module_liveness(self) -> bool:
         """
@@ -467,30 +492,117 @@ class NexRLController:
         self._end_validate(model_tag)
 
     # ---- Module initialization functions ----
-    def _get_module_class_for_role(self, role: NexRLRole, config_type: str) -> type:
-        """Get the class for a specific module type and config type"""
+    def _load_custom_module(
+        self, module_path: str, class_name: str, module_type: str = "module"
+    ) -> type:
+        """
+        Dynamically load a custom module class from a recipe directory.
+
+        Args:
+            module_path: Path to the Python module (e.g., "agent_workspace/my_custom.py")
+            class_name: Name of the class to load
+            module_type: Type of module being loaded (for logging/error messages)
+
+        Returns:
+            The loaded class
+        """
+        import importlib.util
+        import sys
+
+        # Resolve the full path relative to config file
+        config_file_path = getattr(self._config, "_config_file_path", None)
+        if not config_file_path:
+            raise ValueError(
+                "Config file path not available for resolving custom module path. "
+                "Ensure the config has _config_file_path attribute set."
+            )
+
+        from .utils.path_utils import resolve_path_from_config
+
+        full_path_str = resolve_path_from_config(module_path, config_file_path)
+
+        if full_path_str is None:
+            raise ValueError(f"Could not resolve module path: {module_path}")
+
+        full_path = Path(full_path_str)
+
+        if not full_path.exists():
+            raise FileNotFoundError(f"Custom {module_type} module not found: {full_path}")
+
+        # Create a unique module name
+        module_name = f"nexrl.custom_{module_type}.{full_path.stem}"
+
+        # Load the module
+        spec = importlib.util.spec_from_file_location(module_name, full_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load module from {full_path}")
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        # Get the class
+        if not hasattr(module, class_name):
+            raise AttributeError(f"Module {module_path} does not have class {class_name}")
+
+        loaded_class = getattr(module, class_name)
+        logger.info(f"Loaded custom {module_type}: {class_name} from {module_path}")
+
+        return loaded_class
+
+    def _get_module_class_for_role(
+        self, role: NexRLRole, config_type: str, config: DictConfig | None = None
+    ) -> type:
+        """
+        Get the class for a specific module type and config type.
+
+        For ROLLOUT_WORKER and TRAINER roles, supports custom class loading via config.
+
+        Args:
+            role: The NexRL role
+            config_type: The type string from config (e.g., "nexau", "mock")
+            config: Full config object (optional, needed for custom class loading)
+
+        Returns:
+            The module class to instantiate
+        """
+        # Check for custom rollout worker before registry lookup
+        if role == NexRLRole.ROLLOUT_WORKER and config is not None:
+            if "custom_rollout_worker_module_path" in config:
+                custom_path = config.custom_rollout_worker_module_path
+                custom_class_name = config.get(
+                    "custom_rollout_worker_class_name", "CustomRolloutWorker"
+                )
+                return self._load_custom_module(custom_path, custom_class_name, "rollout_worker")
+
+        # Check for custom trainer before registry lookup
+        if role == NexRLRole.TRAINER and config is not None:
+            if "custom_trainer_module_path" in config:
+                custom_path = config.custom_trainer_module_path
+                custom_class_name = config.get("custom_trainer_class_name", "CustomTrainer")
+                return self._load_custom_module(custom_path, custom_class_name, "trainer")
+
+        # Standard registry lookup
         registry: dict[NexRLRole, dict[str, type]] = {
             NexRLRole.DATA_LOADER: {
                 "mock": MockDataLoader,
                 "torch": TorchDataLoader,
             },
-            NexRLRole.ALGORITHM_PROCESSOR: {
-                "mock": MockAlgorithmProcessor,
-                "grpo": GRPOProcessor,
-            },
             NexRLRole.ROLLOUT_WORKER: {
                 "mock": MockRolloutWorker,
                 "simple": SimpleRolloutWorker,
-                "single_turn_math": SingleTurnMathAgent,
+                "agent": AgentRolloutWorker,
+                "pig_latin": PigLatinRolloutWorker,
+                "nexau": DefaultNexAURolloutWorker,  # Default NexAU worker with self-contained implementation
+                # Note: Custom workers use type="nexau" + custom_rollout_worker_module_path
             },
-            NexRLRole.TRAIN_WORKER: {
-                "default": TrainWorker,
+            NexRLRole.TRAINER: {
+                "self_hosted_grpo": SelfHostedGrpoTrainer,
+                "remote_api_grpo": RemoteApiGrpoTrainer,
+                "remote_api_cross_entropy": RemoteApiCrossEntropyTrainer,
             },
             NexRLRole.TRAJECTORY_POOL: {
                 "default": TrajectoryPool,
-            },
-            NexRLRole.TRAIN_BATCH_POOL: {
-                "default": TrainBatchPool,
             },
             NexRLRole.WEIGHT_SYNC_CONTROLLER: {
                 "default": WeightSyncController,
@@ -530,7 +642,7 @@ class NexRLController:
             list of module instances
         """
         module_type = config.get("type", "default")
-        module_class = self._get_module_class_for_role(role, module_type)
+        module_class = self._get_module_class_for_role(role, module_type, config)
         ret = []
 
         if self._launch_mode == "local":
@@ -551,7 +663,10 @@ class NexRLController:
         for i, module in enumerate(ret):
             if hasattr(module, "_actor"):
                 try:
-                    ray.get(module._actor.__ray_ready__.remote(), timeout=60)
+                    ray.get(
+                        module._actor.__ray_ready__.remote(),  # pylint: disable=protected-access
+                        timeout=60,
+                    )
                     logger.debug(f"Module {i} with role {role.value} is ready")
                 except Exception as e:
                     logger.error(
@@ -572,6 +687,21 @@ class NexRLController:
 
         return ret
 
+    def _init_rollout_worker_inference_clients(self):
+        """Initialize inference service clients for all rollout workers"""
+        backend = self._config.service.train_service.backend
+        for worker in self.rollout_workers:
+            if backend == "tinker":
+                execute(worker.init_inference_service_client, self._tinker_service_holder)
+            elif backend == "weaver":
+                execute(worker.init_inference_service_client, self._weaver_service_holder)
+            else:
+                execute(worker.init_inference_service_client)
+
+        logger.info(
+            f"Initialized inference service clients for {len(self.rollout_workers)} rollout workers"
+        )
+
     def _init_modules(self):
         """Initialize all modules using unified approach (supports local, Ray, and hybrid modes)"""
         launch_mode = self._config.launch_mode
@@ -580,15 +710,15 @@ class NexRLController:
         # Define module configurations - single source of truth using roles as keys
         module_configs = {
             NexRLRole.TRAJECTORY_POOL: self._config.trajectory_pool,
-            NexRLRole.TRAIN_BATCH_POOL: self._config.train_batch_pool,
             NexRLRole.WEIGHT_SYNC_CONTROLLER: self._config.weight,
             NexRLRole.DATA_LOADER: self._config.data,
-            NexRLRole.ALGORITHM_PROCESSOR: self._config.algorithm,
+            NexRLRole.TRAINER: self._config.trainer,
             NexRLRole.ROLLOUT_WORKER: self._config.rollout_worker,
-            NexRLRole.TRAIN_WORKER: self._config.train_worker,
             NexRLRole.VALIDATE_DATALOADER: self._config.validate.data,
             NexRLRole.VALIDATOR: self._config.validate.eval,
         }
+
+        # TODO: use reference in config instead to insert_config  # pylint: disable=fixme
 
         # Add inference_service config to weight and rollout_worker config
         insert_config(
@@ -597,13 +727,27 @@ class NexRLController:
         insert_config(
             self._config.rollout_worker, "inference_service", self._config.service.inference_service
         )
-        insert_config(
-            self._config.algorithm, "inference_service", self._config.service.inference_service
-        )
-        insert_config(self._config.algorithm, "train_service", self._config.service.train_service)
-        insert_config(
-            self._config.train_worker, "train_service", self._config.service.train_service
-        )
+        config_file_path = getattr(self._config, "_config_file_path", None)
+        if not config_file_path:
+            raise ValueError(
+                "Config file path not available. Ensure the config has _config_file_path attribute set."
+            )
+        insert_config(self._config.rollout_worker, "_config_file_path", config_file_path)
+
+        if self._config.trainer.get("algorithm", None) is not None:
+            # Add inference_service and train_service config to trainer's algorithm config
+            insert_config(
+                self._config.trainer.algorithm,
+                "inference_service",
+                self._config.service.inference_service,
+            )
+            insert_config(
+                self._config.trainer.algorithm, "train_service", self._config.service.train_service
+            )
+        insert_config(self._config.trainer, "_config_file_path", config_file_path)
+
+        # Add train_service config directly to trainer
+        insert_config(self._config.trainer, "train_service", self._config.service.train_service)
 
         if launch_mode == "ray":
             self._init_ray_resources(module_configs)
@@ -625,14 +769,9 @@ class NexRLController:
             module_configs[NexRLRole.WEIGHT_SYNC_CONTROLLER],
             num_workers=1,
         )[0]
-        self.train_batch_pool = self._init_module_for_role(
-            NexRLRole.TRAIN_BATCH_POOL,
-            module_configs[NexRLRole.TRAIN_BATCH_POOL],
-            num_workers=1,
-        )[0]
-        self.algorithm_processor = self._init_module_for_role(
-            NexRLRole.ALGORITHM_PROCESSOR,
-            module_configs[NexRLRole.ALGORITHM_PROCESSOR],
+        self.trainer = self._init_module_for_role(
+            NexRLRole.TRAINER,
+            module_configs[NexRLRole.TRAINER],
             num_workers=1,
         )[0]
 
@@ -641,11 +780,6 @@ class NexRLController:
             module_configs[NexRLRole.ROLLOUT_WORKER],
             num_workers=self._config.rollout_worker.num_workers,
         )
-        self.train_worker = self._init_module_for_role(
-            NexRLRole.TRAIN_WORKER,
-            module_configs[NexRLRole.TRAIN_WORKER],
-            num_workers=self._config.train_worker.num_workers,  # usually 1
-        )[0]
         self.validate_dataloader = self._init_module_for_role(
             NexRLRole.VALIDATE_DATALOADER,
             module_configs[NexRLRole.VALIDATE_DATALOADER],
@@ -658,8 +792,12 @@ class NexRLController:
             num_workers=1,
         )[0]
 
+        # Initialize inference service clients
+        self._init_rollout_worker_inference_clients()
+
         # Set module references
         self._set_module_references()
+
         logger.info("Module initialization completed successfully")
 
     def _set_module_references(self):
@@ -684,13 +822,8 @@ class NexRLController:
             weight_sync_controller=self.weight_sync_controller,
         )
         execute(
-            self.algorithm_processor.set_module_references,
+            self.trainer.set_module_references,
             trajectory_pool=self.trajectory_pool,
-            train_batch_pool=self.train_batch_pool,
-        )
-        execute(
-            self.train_worker.set_module_references,
-            train_batch_pool=self.train_batch_pool,
             weight_sync_controller=self.weight_sync_controller,
         )
         execute(
@@ -702,6 +835,20 @@ class NexRLController:
             self.validator.set_module_references,
             validate_dataloader=self.validate_dataloader,
         )
+        if self.use_tinker:
+            execute(
+                self.weight_sync_controller.set_tinker_service_holder, self._tinker_service_holder
+            )
+            # Set service holder for RemoteApiTrainer
+            if hasattr(self.trainer, "set_service_holder"):
+                execute(self.trainer.set_service_holder, self._tinker_service_holder)
+        if self.use_weaver:
+            execute(
+                self.weight_sync_controller.set_weaver_service_holder, self._weaver_service_holder
+            )
+            # Set service holder for RemoteApiTrainer
+            if hasattr(self.trainer, "set_service_holder"):
+                execute(self.trainer.set_service_holder, self._weaver_service_holder)
 
     def _init_ray_resources(self, module_configs):
         """Initialize Ray resources and register all roles"""
@@ -733,32 +880,12 @@ class NexRLController:
         )
 
         self._ray_resource_manager.register_role(
-            role=NexRLRole.TRAIN_BATCH_POOL,
-            cls=self._get_module_class_for_role(
-                NexRLRole.TRAIN_BATCH_POOL, module_configs[NexRLRole.TRAIN_BATCH_POOL].type
-            ),
-            config=module_configs[NexRLRole.TRAIN_BATCH_POOL],
-            count=1,
-            colocation_group="main",
-        )
-
-        self._ray_resource_manager.register_role(
             role=NexRLRole.WEIGHT_SYNC_CONTROLLER,
             cls=self._get_module_class_for_role(
                 NexRLRole.WEIGHT_SYNC_CONTROLLER,
                 module_configs[NexRLRole.WEIGHT_SYNC_CONTROLLER].type,
             ),
             config=module_configs[NexRLRole.WEIGHT_SYNC_CONTROLLER],
-            count=1,
-            colocation_group="main",
-        )
-
-        self._ray_resource_manager.register_role(
-            role=NexRLRole.ALGORITHM_PROCESSOR,
-            cls=self._get_module_class_for_role(
-                NexRLRole.ALGORITHM_PROCESSOR, module_configs[NexRLRole.ALGORITHM_PROCESSOR].type
-            ),
-            config=module_configs[NexRLRole.ALGORITHM_PROCESSOR],
             count=1,
             colocation_group="main",
         )
@@ -790,20 +917,24 @@ class NexRLController:
         self._ray_resource_manager.register_role(
             role=NexRLRole.ROLLOUT_WORKER,
             cls=self._get_module_class_for_role(
-                NexRLRole.ROLLOUT_WORKER, module_configs[NexRLRole.ROLLOUT_WORKER].type
+                NexRLRole.ROLLOUT_WORKER,
+                module_configs[NexRLRole.ROLLOUT_WORKER].type,
+                module_configs[
+                    NexRLRole.ROLLOUT_WORKER
+                ],  # Pass full config for custom worker support
             ),
             config=module_configs[NexRLRole.ROLLOUT_WORKER],
             count=rollout_worker_count,
             colocation_group=None,  # None = standalone
         )
 
-        # Train worker - needs its own dedicated process
+        # Trainer - needs its own dedicated process
         self._ray_resource_manager.register_role(
-            role=NexRLRole.TRAIN_WORKER,
+            role=NexRLRole.TRAINER,
             cls=self._get_module_class_for_role(
-                NexRLRole.TRAIN_WORKER, module_configs[NexRLRole.TRAIN_WORKER].type
+                NexRLRole.TRAINER, module_configs[NexRLRole.TRAINER].type
             ),
-            config=module_configs[NexRLRole.TRAIN_WORKER],
+            config=module_configs[NexRLRole.TRAINER],
             count=1,
             colocation_group=None,  # None = standalone
         )
@@ -837,3 +968,126 @@ class NexRLController:
                 raise
         else:
             raise ValueError(f"Unsupported launch mode: {self._launch_mode}")
+
+    def _init_tinker_service(self):
+        """Initialize Tinker service holder for Tinker backend"""
+        from .tinker import TinkerServiceHolder
+
+        tinker_config = self._config.service.get("tinker_service", {})
+        # Get base_url from environment, fallback to config
+        base_url = os.environ.get("TINKER_BASE_URL", None)
+        if base_url is None:
+            base_url = tinker_config.get("base_url", None)
+
+        # Get tinker_api_key from environment, fallback to config
+        tinker_api_key = os.environ.get("TINKER_API_KEY", None)
+        if tinker_api_key is None:
+            tinker_api_key = tinker_config.get("api_key", None)
+
+        # Report error if tinker_api_key is not provided in either environment or config
+        if not tinker_api_key:
+            error_msg = (
+                "WEAVER_API_KEY is required but not found in environment variables or config"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        os.environ["TINKER_API_KEY"] = tinker_api_key
+
+        base_model = self._config.service.inference_service.model
+        tokenizer_path = self._config.service.inference_service.get("tokenizer", None)
+        lora_rank = tinker_config.get("lora_rank", 32)
+
+        # Create TinkerServiceHolder (can be Ray actor or local)
+        if self._launch_mode == "local":
+            self._tinker_service_holder = TinkerServiceHolder(
+                base_model=base_model,
+                lora_rank=lora_rank,
+                base_url=base_url,
+                tokenizer_path=tokenizer_path,
+            )
+        elif self._launch_mode == "ray":
+            # Create as Ray actor for shared access
+            env_vars = _get_minimal_env_vars()
+            env_vars["TINKER_API_KEY"] = tinker_api_key
+            TinkerServiceActor = ray.remote(TinkerServiceHolder).options(
+                runtime_env={"env_vars": env_vars},
+            )
+            self._tinker_service_holder = TinkerServiceActor.remote(
+                base_model=base_model,
+                lora_rank=lora_rank,
+                base_url=base_url,
+                tokenizer_path=tokenizer_path,
+            )
+            # Wait for initialization
+            try:
+                ray.get(self._tinker_service_holder.__ray_ready__.remote(), timeout=180)  # type: ignore
+                logger.info("TinkerServiceHolder Ray actor is ready")
+            except Exception as e:
+                logger.error(f"TinkerServiceHolder failed initialization: {e}")
+                raise
+
+        logger.info("TinkerServiceHolder initialized successfully")
+
+    def _init_weaver_service(self):
+        """Initialize Weaver service holder for Weaver backend"""
+        from .weaver import WeaverServiceHolder
+
+        weaver_config = self._config.service.get("weaver_service", {})
+
+        # Get base_url from environment, fallback to config
+        base_url = os.environ.get("WEAVER_BASE_URL", None)
+        if base_url is None:
+            base_url = weaver_config.get("base_url", None)
+
+        # Get weaver_api_key from environment, fallback to config
+        weaver_api_key = os.environ.get("WEAVER_API_KEY", None)
+        if weaver_api_key is None:
+            weaver_api_key = weaver_config.get("api_key", None)
+
+        # Report error if weaver_api_key is not provided in either environment or config
+        if not weaver_api_key:
+            error_msg = (
+                "WEAVER_API_KEY is required but not found in environment variables or config"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Set weaver_api_key in environment for downstream usage
+        os.environ["WEAVER_API_KEY"] = weaver_api_key
+
+        base_model = self._config.service.inference_service.model
+        tokenizer_path = self._config.service.inference_service.get("tokenizer", None)
+        lora_rank = weaver_config.get("lora_rank", 32)
+
+        logger.info(f"Initializing WeaverServiceHolder: base_model={base_model}, rank={lora_rank}")
+
+        if self._launch_mode == "local":
+            self._weaver_service_holder = WeaverServiceHolder(
+                base_model=base_model,
+                lora_rank=lora_rank,
+                base_url=base_url,
+                tokenizer_path=tokenizer_path,
+            )
+        elif self._launch_mode == "ray":
+            env_vars = _get_minimal_env_vars()
+            env_vars["WEAVER_API_KEY"] = weaver_api_key
+            if base_url:
+                env_vars["WEAVER_BASE_URL"] = base_url
+            WeaverServiceActor = ray.remote(WeaverServiceHolder).options(
+                runtime_env={"env_vars": env_vars},
+            )
+            self._weaver_service_holder = WeaverServiceActor.remote(
+                base_model=base_model,
+                lora_rank=lora_rank,
+                base_url=base_url,
+            )
+            if hasattr(self._weaver_service_holder, "__ray_ready__"):
+                try:
+                    ray.get(self._weaver_service_holder.__ray_ready__.remote(), timeout=180)  # type: ignore[attr-defined]
+                    logger.info("WeaverServiceHolder Ray actor is ready")
+                except Exception as e:
+                    logger.error(f"WeaverServiceHolder failed initialization: {e}")
+                    raise
+
+        logger.info("WeaverServiceHolder initialized successfully")
