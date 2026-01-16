@@ -35,8 +35,9 @@ environment:
 #==========================================
 
 resume:
-  mode: disable
-  resume_path: ""
+  mode: disable  # Options: disable, auto, from_path
+  resume_path: ""  # Required when mode is 'from_path'
+  resume_dataloader: true  # Whether to skip already-consumed batches when resuming
 
 #==========================================
 # DATA LOADER CONFIGURATION
