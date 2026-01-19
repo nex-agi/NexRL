@@ -331,6 +331,30 @@ class NexRLController:
         execute(self.trainer.set_train_step, global_step)
         logger.info(f"Training will resume from step {global_step}")
 
+        # Resume dataloader by skipping already-consumed batches
+        resume_dataloader = self._config.resume.get("resume_dataloader", True)
+        if resume_dataloader and global_step > 0:
+            logger.info(
+                f"Resuming dataloader: skipping first {global_step} batches "
+                f"(corresponding to {global_step} training steps)"
+            )
+            try:
+                execute(self.dataloader.skip_batches, global_step)
+                logger.info(f"Successfully resumed dataloader from step {global_step}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to skip batches in dataloader: {e}. "
+                    f"Training will continue but may process duplicate data.",
+                    exc_info=True,
+                )
+        elif not resume_dataloader:
+            logger.info(
+                "Dataloader resume is disabled (resume.resume_dataloader=false). "
+                "Dataloader will start from the beginning - data may be processed again."
+            )
+        else:
+            logger.info("No batches to skip (global_step=0)")
+
     def _find_latest_checkpoint(self, checkpoint_folder: str) -> str | None:
         """Find the latest checkpoint in the given folder"""
         if not os.path.exists(checkpoint_folder):

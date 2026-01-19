@@ -114,6 +114,12 @@ class BaseDataLoader(NexRLModule, ABC):
         multiple times.
         """
 
+    @abstractmethod
+    def skip_batches(self, num_batches: int) -> None:
+        """
+        Skip the first num_batches batches from the dataloader.
+        """
+
     def set_module_references(self, weight_sync_controller: WeightSyncController):
         """
         Set the weight sync controller for this data loader.
@@ -351,4 +357,67 @@ class SequentialDataLoader(BaseDataLoader, ABC):
             logger.info(
                 f"SequentialDataLoader: Reset dataloader to beginning "
                 f"(is_validate={self._is_validate})"
+            )
+
+    def skip_batches(self, num_batches: int) -> None:
+        """
+        Skip the first num_batches batches from the dataloader.
+
+        This is used for resuming training from a checkpoint. When resuming,
+        we need to skip the batches that have already been consumed in the
+        previous training run.
+
+        Note: This method skips underlying data batches (before rollout_repeat_n
+        expansion). If rollout_repeat_n > 1, each underlying batch will be expanded
+        into multiple repeated items, but we skip at the batch level.
+
+        Args:
+            num_batches: Number of batches to skip
+
+        Raises:
+            RuntimeError: If dataloader has already started iteration
+        """
+        with self._lock:
+            if self._data_index > 0:
+                raise RuntimeError(
+                    f"Cannot skip batches after dataloader has started iteration. "
+                    f"Current data_index: {self._data_index}"
+                )
+
+            if num_batches <= 0:
+                logger.info("No batches to skip (num_batches <= 0)")
+                return
+
+            logger.info(
+                f"SequentialDataLoader: Skipping {num_batches} batches for resume "
+                f"(rollout_repeat_n={self._rollout_repeat_n})"
+            )
+
+            skipped_count = 0
+            for i in range(num_batches):
+                # Fetch and discard the batch
+                success = self._try_fetch_batch()
+                if not success:
+                    logger.warning(
+                        f"SequentialDataLoader: Reached end of data after skipping "
+                        f"{skipped_count}/{num_batches} batches. Dataset may be smaller "
+                        f"than expected or checkpoint step is invalid."
+                    )
+                    break
+
+                skipped_count += 1
+
+                # Log progress for large skips
+                if (i + 1) % 10 == 0 or (i + 1) == num_batches:
+                    logger.info(f"Skipped {i + 1}/{num_batches} batches...")
+
+            # After skipping, clear the buffer so the next get_next_item() starts fresh
+            # Update _data_index to reflect the skipped items
+            total_items_skipped = self._data_index
+            self._data_buffer = []
+            self._buffer_index = 0
+
+            logger.info(
+                f"SequentialDataLoader: Successfully skipped {skipped_count} batches "
+                f"({total_items_skipped} items after rollout_repeat_n expansion)"
             )
