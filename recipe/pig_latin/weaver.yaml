@@ -20,6 +20,14 @@ project_name: "NexRL-weaver"
 experiment_name: "weaver-pig_latin_qwen3_8b"
 
 #==========================================
+# DATA CONFIGURATION (Weaver-specific)
+#==========================================
+
+data:
+  # Override tokenizer to use resource path
+  tokenizer_path: ${service.inference_service.model}
+
+#==========================================
 # TRAINER CONFIGURATION (Weaver-specific)
 #==========================================
 

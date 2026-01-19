@@ -35,8 +35,9 @@ environment:
 #==========================================
 
 resume:
-  mode: disable
-  resume_path: ""
+  mode: disable  # Options: disable, auto, from_path
+  resume_path: ""  # Required when mode is 'from_path'
+  resume_dataloader: true  # Whether to skip already-consumed batches when resuming
 
 #==========================================
 # DATA LOADER CONFIGURATION
@@ -63,7 +64,7 @@ data:
   max_response_length: 8192
 
   # Tokenizer path - Use environment variable
-  tokenizer_path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
+  tokenizer_path: ""
 
   shuffle: true
   drop_last: true
@@ -85,6 +86,7 @@ rollout_worker:
 
   max_prompt_length: ${data.max_prompt_length}
   max_response_length: ${data.max_response_length}
+  tokenizer: ${data.tokenizer_path}
 
 #==========================================
 # TRAJECTORY POOL CONFIGURATION
@@ -106,6 +108,18 @@ trainer:
   save_freq: 0
   max_prompt_length: ${data.max_prompt_length}
   max_response_length: ${data.max_response_length}
+
+  # Algorithm configuration (optional, can be overridden by child configs)
+  # Used by self-hosted trainers (e.g., self_hosted_grpo)
+  algorithm: null
+
+#==========================================
+# SERVICE CONFIGURATION
+#==========================================
+
+# Service configuration (optional, can be overridden by child configs)
+# Used by all deployment modes (self-hosted, tinker, weaver)
+service: null
 
 #==========================================
 # WEIGHT MANAGEMENT CONFIGURATION

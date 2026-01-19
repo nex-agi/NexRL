@@ -28,6 +28,14 @@ environment:
   require_setup_script: true
 
 #==========================================
+# DATA CONFIGURATION (Tinker-specific)
+#==========================================
+
+data:
+  # Override tokenizer to use resource path
+  tokenizer_path: ${service.inference_service.model}
+
+#==========================================
 # TRAINER CONFIGURATION (Tinker-specific)
 #==========================================
 

@@ -20,6 +20,15 @@ project_name: "NexRL-tinker"
 experiment_name: "tinker-single_turn_math_qwen3_8b"
 
 #==========================================
+# DATA CONFIGURATION (Tinker-specific)
+#==========================================
+
+data:
+  # Override tokenizer to use resource path
+  tokenizer_path: ${service.inference_service.model}
+
+
+#==========================================
 # TRAINER CONFIGURATION (Tinker-specific)
 #==========================================
 
