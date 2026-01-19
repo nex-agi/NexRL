@@ -18,6 +18,11 @@ echo "=========================================="
 echo "Setting up environment for News (Self-hosted)"
 echo "=========================================="
 
+export LLM_MODEL=${SERVED_MODEL_NAME}
+export LLM_API_KEY="EMPTY"
+export LLM_BASE_URL="EMPTY"
+
+
 # LangFuse Monitoring (Optional)
 export LANGFUSE_SECRET_KEY="sk-lf-your-secret-key"
 export LANGFUSE_PUBLIC_KEY="pk-lf-your-public-key"

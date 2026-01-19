@@ -20,6 +20,15 @@ project_name: "NexRL-self-hosted"
 experiment_name: "self-hosted-pig_latin"
 
 #==========================================
+# DATA CONFIGURATION (Self-hosted-specific)
+#==========================================
+
+data:
+  # Override tokenizer to use resource path
+  tokenizer_path: ${resource.inference.model_path}
+
+
+#==========================================
 # TRAINER CONFIGURATION (Self-hosted-specific)
 #==========================================
 

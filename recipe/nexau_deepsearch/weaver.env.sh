@@ -23,6 +23,10 @@ export WEAVER_API_KEY="sk-your-weaver-api-key-here"
 
 # Web Search API Key (REQUIRED for DeepSearch)
 export SERPER_API_KEY="your-serper-api-key"
+export LLM_MODEL=${SERVED_MODEL_NAME}
+export LLM_API_KEY="EMPTY"
+export LLM_BASE_URL="EMPTY"
+
 
 # LangFuse Monitoring (Optional)
 export LANGFUSE_SECRET_KEY="sk-lf-your-secret-key"
