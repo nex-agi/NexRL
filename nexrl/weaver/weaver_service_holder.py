@@ -90,6 +90,23 @@ class WeaverServiceHolder:
 
         logger.info("Initialized WeaverServiceHolder")
 
+    def close(self):
+        """
+        Close the Weaver service client and cleanup resources.
+        """
+        if hasattr(self, "_service_client") and self._service_client is not None:
+            logger.info("Closing WeaverServiceHolder and service client")
+            try:
+                self._service_client.close()
+            except Exception as e:
+                logger.warning(f"Error closing service client: {e}")
+
+    def __del__(self):
+        """
+        Destructor to ensure cleanup when the object is garbage collected.
+        """
+        self.close()
+
     # --------------------------------------------------------------------- #
     # Public API used by NexRL components
     # --------------------------------------------------------------------- #
