@@ -37,6 +37,7 @@ NexRL follows a modular architecture where components communicate through explic
 2. **Train Service**: Utilizes standardized forward() and forward_backward() APIs to communicate with different training backends (including FSDP, Megatron, etc.). To achieve compatibility with diverse backends, we implement lightweight adapters tailored for each backend. These adapters translate the standardized API calls into backend-specific operations, enabling seamless switching of training backends without altering the core training logic.
 3. **Agent Service**: Provides a streamlined integration path for agents to participate in RL training. Agents can directly push generated trajectories into the TrajectoryPool through this service, eliminating the need for developers to rewrite or modify agent code to adapt to RL training requirements.
 
+
 ## Getting Started
 
 ### Prerequisites
@@ -138,7 +139,7 @@ nexrl -m self-hosted \
 ## Documentation
 
 - **[User Guide](docs/user-guide.md)**: Complete guide for developing and integrating RL algorithms. Train NexAU agents with zero code modification—just provide configuration files and task-specific evaluators.
-- **[Developer Guide](docs/developer-guide.md)**: Comprehensive documentation on architecture, APIs, and advanced usage
+- **[Developer Guide](docs/developer-guide)**: Comprehensive documentation on architecture, APIs, and advanced usage
 - **[Configuration Examples](recipe/)**: Ready-to-use training recipes for various models and tasks
 - **[Test Suite](tests/README.md)**: Testing guide and examples
 
