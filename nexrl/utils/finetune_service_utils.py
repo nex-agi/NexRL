@@ -27,20 +27,21 @@ def convert_trajectories_to_datums(trajectories: list[Trajectory]) -> list[dict]
         logprobs = traj["logprobs"]
         loss_mask = traj["loss_mask"]
         advantage = traj["advantage"]
-
-        if advantage == 0.0:
-            continue
+        # if advantage == 0.0:
+        #     continue
 
         input_tokens = tokens[:-1]
         target_tokens = tokens[1:]
         adjusted_logprobs = logprobs[1:] if len(logprobs) == len(tokens) else logprobs
         adjusted_loss_mask = loss_mask[1:]
         token_advantages = [float(advantage * mask) for mask in adjusted_loss_mask]
-
         loss_fn_inputs = {
             "target_tokens": target_tokens,
             "logprobs": [float(lp) for lp in adjusted_logprobs],
             "advantages": token_advantages,
+            # Token-level mask aligned with target_tokens (0 for prompt / ignored tokens, 1 for response tokens).
+            # This is used by the trainer to compute loss/entropy over response tokens only.
+            "loss_mask": [int(m) for m in adjusted_loss_mask],
         }
 
         datum_data = {

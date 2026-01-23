@@ -46,6 +46,7 @@ class WeaverServiceHolder:
         lora_rank: int = 32,
         base_url: str | None = None,
         tokenizer_path: str | None = None,
+        training_mode: str = "lora",
     ):
         assert ServiceClient is not None, "weaver package not installed"
         assert types is not None, "weaver package not installed"
@@ -64,8 +65,7 @@ class WeaverServiceHolder:
         # Create training client
         logger.info("Creating Weaver training client")
         self._training_client = self._service_client.create_model(
-            base_model=base_model,
-            lora_config={"rank": lora_rank},
+            base_model=base_model, training_mode=training_mode, lora_config={"rank": lora_rank}
         )
 
         if tokenizer_path is None:
@@ -245,6 +245,58 @@ class WeaverServiceHolder:
         import torch
         from weaver.types.tensor import tensor_payload
 
+        def _extract_metrics_from_result(result_obj: Any) -> dict[str, Any]:
+            """
+            Weaver responses are not perfectly stable across versions.
+
+            We try (in order):
+            - result["metrics"]
+            - result["result"]["metrics"]
+            - aggregate metrics from per-task results in result["forward_backward_task_results"]
+              (or nested under result["result"][...]).
+            """
+            if not isinstance(result_obj, dict):
+                return {}
+
+            # Normalize one level of nesting
+            top = result_obj
+            inner = result_obj.get("result")
+            if isinstance(inner, dict):
+                # Prefer inner container if present (common pattern in SDKs)
+                top = inner
+
+            metrics = top.get("metrics")
+            if isinstance(metrics, dict):
+                return metrics
+
+            fb_task_results = top.get("forward_backward_task_results")
+            if not isinstance(fb_task_results, dict) or not fb_task_results:
+                return {}
+
+            # Aggregate per-task metrics.
+            # - Sum keys that are naturally counts/sums (tokens, "*:sum")
+            # - Mean everything else to keep scales stable across batch sizes.
+            sums: dict[str, float] = {}
+            counts: dict[str, int] = {}
+            for _, task_res in fb_task_results.items():
+                if not isinstance(task_res, dict):
+                    continue
+                tm = task_res.get("metrics")
+                if not isinstance(tm, dict):
+                    continue
+                for k, v in tm.items():
+                    if isinstance(v, (int, float)):
+                        sums[k] = sums.get(k, 0.0) + float(v)
+                        counts[k] = counts.get(k, 0) + 1
+
+            aggregated: dict[str, Any] = {}
+            for k, total in sums.items():
+                if k == "tokens" or str(k).endswith(":sum"):
+                    aggregated[k] = total
+                else:
+                    aggregated[k] = total / max(counts.get(k, 1), 1)
+            return aggregated
+
         datums = []
         for d in datums_data:
             loss_fn_inputs = {}
@@ -260,9 +312,7 @@ class WeaverServiceHolder:
         result = self._training_client.forward_backward(
             datums, loss_fn=loss_fn, loss_fn_config=loss_fn_config, wait=True
         )
-        metrics: dict[str, Any] = {}
-        if isinstance(result, dict):
-            metrics = result.get("metrics") or result.get("result", {}).get("metrics") or {}
+        metrics = _extract_metrics_from_result(result)
         return {"loss": metrics.get("loss", 0.0), "metrics": metrics}
 
     def optim_step(
@@ -270,17 +320,27 @@ class WeaverServiceHolder:
         learning_rate: float = 2e-6,
         beta1: float = 0.9,
         beta2: float = 0.95,
+        weight_decay: float = 1e-2,
         eps: float = 1e-8,
+        grad_clip_norm: float = 1.0,
     ) -> dict:
         adam_params = types.AdamParams(
             learning_rate=learning_rate,
             beta1=beta1,
             beta2=beta2,
+            weight_decay=weight_decay,
             eps=eps,
+            grad_clip_norm=grad_clip_norm,
         )
 
-        self._training_client.optim_step(adam_params, wait=True)
-        return {"status": "success"}
+        result = self._training_client.optim_step(adam_params, wait=True)
+
+        # Extract metrics from optimizer step result
+        optim_metrics = {}
+        if isinstance(result, dict) and "metrics" in result:
+            optim_metrics = result["metrics"]
+
+        return {"status": "success", "metrics": optim_metrics}
 
     def forward_backward_and_optim_step(
         self,
@@ -290,11 +350,26 @@ class WeaverServiceHolder:
         learning_rate: float = 2e-6,
         beta1: float = 0.9,
         beta2: float = 0.95,
+        weight_decay: float = 1e-2,
         eps: float = 1e-8,
+        grad_clip_norm: float = 1.0,
     ) -> dict:
         fwd = self.forward_backward(datums_data, loss_fn=loss_fn, loss_fn_config=loss_fn_config)
-        self.optim_step(learning_rate=learning_rate, beta1=beta1, beta2=beta2, eps=eps)
-        return fwd.get("metrics", {})
+        optim = self.optim_step(
+            learning_rate=learning_rate,
+            beta1=beta1,
+            beta2=beta2,
+            weight_decay=weight_decay,
+            eps=eps,
+            grad_clip_norm=grad_clip_norm,
+        )
+
+        # Combine metrics from both operations
+        combined_metrics = fwd.get("metrics", {}).copy()
+        optim_metrics = optim.get("metrics", {})
+        combined_metrics.update(optim_metrics)
+        print(f"combined_metrics: {combined_metrics}")
+        return combined_metrics
 
     def save_weights_for_sampler(self, name: str) -> str:
         save_path = self._training_client.save_weights_for_sampler(name=name)

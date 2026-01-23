@@ -70,14 +70,18 @@ class RemoteApiTrainer(BaseTrainer):
         self._learning_rate = train_config.get("learning_rate", 2e-6)
         self._beta1 = train_config.get("beta1", 0.9)
         self._beta2 = train_config.get("beta2", 0.95)
+        self._weight_decay = train_config.get("weight_decay", 1e-2)
         self._eps = train_config.get("eps", 1e-8)
+        self._grad_clip_norm = train_config.get("grad_clip_norm", 1.0)
+        self._entropy_coeff = train_config.get("entropy_coeff", 1e-4)
 
         # Step counter for weight saving
         self._step_counter = 0
 
         logger.info(
             f"RemoteApiTrainer initialized: loss_fn={self._loss_fn}, "
-            f"lr={self._learning_rate}, beta1={self._beta1}, beta2={self._beta2}"
+            f"lr={self._learning_rate}, beta1={self._beta1}, beta2={self._beta2}, "
+            f"weight_decay={self._weight_decay}, eps={self._eps}, grad_clip_norm={self._grad_clip_norm}"
         )
 
     def set_service_holder(self, service_holder: TinkerServiceHolder | WeaverServiceHolder) -> None:
@@ -147,14 +151,21 @@ class RemoteApiTrainer(BaseTrainer):
         # Step 4: Execute forward_backward and optim_step together
         from ..executor import execute
 
+        loss_fn_config = {
+            "entropy_coeff": self._entropy_coeff,
+        }
+
         training_metrics = execute(
             self._service_holder.forward_backward_and_optim_step,
             datums_data=datums_data,
             loss_fn=self._loss_fn,
+            loss_fn_config=loss_fn_config,
             learning_rate=self._learning_rate,
             beta1=self._beta1,
             beta2=self._beta2,
+            weight_decay=self._weight_decay,
             eps=self._eps,
+            grad_clip_norm=self._grad_clip_norm,
         )
 
         # Step 5: Save weights and update sampling client
