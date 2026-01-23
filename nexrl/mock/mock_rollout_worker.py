@@ -16,8 +16,8 @@
 Mock Rollout Worker for testing purposes
 """
 
+import hashlib
 import logging
-import random
 import threading
 import time
 from typing import Any
@@ -30,6 +30,17 @@ from ..rollout_worker.base_rollout_worker import BaseRolloutWorker
 from .mock_inference_service_client import MockInferenceServiceClient
 
 logger = logging.getLogger(__name__)
+
+
+def _deterministic_reward(*parts: object) -> float:
+    """
+    Map inputs deterministically to a binary reward (0.0 or 1.0).
+    Stable across processes/runs (unlike Python's built-in hash()).
+    """
+    payload = "|".join(str(p) for p in parts).encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    # Use 1 bit -> deterministic binary reward.
+    return float(digest[0] & 1)
 
 
 class MockRolloutWorker(BaseRolloutWorker):
@@ -64,11 +75,10 @@ class MockRolloutWorker(BaseRolloutWorker):
         self._processed_count: int = 0
         self._mock_delay: float = 0.1
 
-        logger.info("MockRolloutWorker initialized with MockInferenceServiceClient")
-
-    def rollout(self, task: dict[str, Any]) -> None:
+    def rollout(self, task: dict[str, Any]) -> str | None:
         """
         Mock implementation of a single step operation.
+        If trajectories are loaded from file, replay them; otherwise generate mock trajectories.
 
         Args:
             task: Task to process
@@ -76,6 +86,18 @@ class MockRolloutWorker(BaseRolloutWorker):
         # Simulate processing time
         time.sleep(self._mock_delay)
 
+        # Otherwise, generate mock trajectory
+        # GRPO grouping fields: propagate from task (preferred), otherwise generate defaults.
+        # - group_id: identifies the group of repeated rollouts for the same prompt
+        # - run_id: identifies the sample index within the group
+        # - uid: some configs / pools use uid as the grouping key
+        group_id = task.get("group_id") or task.get("uid")
+        if not group_id:
+            # Deterministic fallback to keep mock runs reproducible.
+            group_id = f"mock-{hashlib.sha256(task['prompt'].encode('utf-8')).hexdigest()[:16]}"
+        run_id = int(task.get("run_id", 0))
+        task_id = task.get("task_id")
+        uid = task.get("uid") or group_id
         # Generate mock tokens and loss_mask (simple mock: 10 prompt tokens, 5 response tokens)
         prompt_tokens = list(range(100, 110))
         response_tokens = list(range(200, 205))
@@ -86,11 +108,17 @@ class MockRolloutWorker(BaseRolloutWorker):
         mock_trajectory = Trajectory(
             tokens=tokens,
             loss_mask=loss_mask,
-            reward=random.uniform(0.0, 1.0),
+            reward=_deterministic_reward(task.get("is_val", False), run_id, task["prompt"]),
             is_val=task.get("is_val", False),
             extra_fields={
+                # GRPO-required fields
+                "group_id": group_id,
+                "run_id": run_id,
+                "uid": uid,
+                # Stable ordering key (preferred over uuid-like group_id)
+                "task_id": task_id,
                 "prompt": task["prompt"],
-                "response": f"Mock response {self._processed_count}",
+                "response": f"Mock response (group_id={group_id}, run_id={run_id})",
                 "logprobs": [0.0] * len(tokens),
             },
         )
@@ -98,4 +126,4 @@ class MockRolloutWorker(BaseRolloutWorker):
         self._processed_count += 1
         logger.info(f"Mock rollout worker: Successfully processed step #{self._processed_count}")
 
-        self._put_trajectory(mock_trajectory)
+        return self._put_trajectory(mock_trajectory)

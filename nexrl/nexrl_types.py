@@ -133,6 +133,43 @@ class Batch:
     def copy(self) -> "Batch":
         return Batch(self.values.copy(), self.metadata.copy())
 
+    def reorder(self, perm: list[int] | torch.Tensor) -> "Batch":
+        """
+        Reorder per-sample entries in this batch using a permutation.
+
+        This reorders:
+        - Tensor values shaped like (batch_size, ...)
+        - list / numpy.ndarray values with length/first-dim == batch_size
+        - metadata entries that look per-sample (list/ndarray with length/first-dim == batch_size)
+        """
+        bsz = len(self)
+        if isinstance(perm, torch.Tensor):
+            perm_list = perm.detach().cpu().tolist()
+        else:
+            perm_list = list(perm)
+
+        if len(perm_list) != bsz:
+            raise ValueError(f"Permutation length {len(perm_list)} != batch_size {bsz}")
+
+        def _reorder_value(v: Any) -> Any:
+            if isinstance(v, torch.Tensor):
+                if v.dim() >= 1 and v.shape[0] == bsz:
+                    return v[perm_list]
+                return v
+            if isinstance(v, list):
+                if len(v) == bsz:
+                    return [v[i] for i in perm_list]
+                return v
+            if isinstance(v, np.ndarray):
+                if v.shape and v.shape[0] == bsz:
+                    return v[perm_list]
+                return v
+            return v
+
+        new_values = {k: _reorder_value(v) for k, v in self.values.items()}
+        new_metadata = {k: _reorder_value(v) for k, v in self.metadata.items()}
+        return Batch(values=new_values, metadata=new_metadata)
+
     def to_dict(self) -> dict[str, Any]:
         """
         Convert the Batch to a single dictionary containing both values and metadata.

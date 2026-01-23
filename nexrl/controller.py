@@ -1084,6 +1084,8 @@ class NexRLController:
         tokenizer_path = self._config.service.inference_service.get("tokenizer", None)
         lora_rank = weaver_config.get("lora_rank", 32)
 
+        training_mode = weaver_config.get("training_mode", "lora")
+
         logger.info(f"Initializing WeaverServiceHolder: base_model={base_model}, rank={lora_rank}")
 
         if self._launch_mode == "local":
@@ -1092,6 +1094,7 @@ class NexRLController:
                 lora_rank=lora_rank,
                 base_url=base_url,
                 tokenizer_path=tokenizer_path,
+                training_mode=training_mode,
             )
         elif self._launch_mode == "ray":
             env_vars = _get_minimal_env_vars()
@@ -1105,6 +1108,7 @@ class NexRLController:
                 base_model=base_model,
                 lora_rank=lora_rank,
                 base_url=base_url,
+                training_mode=training_mode,
             )
             if hasattr(self._weaver_service_holder, "__ray_ready__"):
                 try:

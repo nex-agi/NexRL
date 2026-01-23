@@ -216,14 +216,18 @@ def compute_grpo_advantage_for_trajectories(
                 for reward, run_id in zip(rewards, run_ids_list):
                     run_id_to_rewards[run_id].append(reward)
                 # Compute mean per run_id, then mean of those means
-                per_run_means = [np.mean(run_rewards) for run_rewards in run_id_to_rewards.values()]
-                mean_reward = np.mean(per_run_means)
-                std_reward = np.std(per_run_means)
+                per_run_means = [
+                    np.mean(run_rewards).item() for run_rewards in run_id_to_rewards.values()
+                ]
+                per_run_means_tensor = torch.tensor(per_run_means)
+                # mean_reward = np.mean(per_run_means)
+                # std_reward = np.std(per_run_means)
+                mean_reward = per_run_means_tensor.mean()
+                std_reward = torch.std(per_run_means_tensor)
             else:
                 mean_reward = np.mean(rewards)
                 std_reward = np.std(rewards)
             group_stats[group_id] = (mean_reward, std_reward)
-
     for i, traj in enumerate(trajectories):
         group_id = traj.get("group_id", str(i))
         mean_reward, std_reward = group_stats[group_id]

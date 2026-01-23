@@ -221,6 +221,66 @@ def compute_policy_loss(
     return pg_loss, {"pg_clipfrac": pg_clipfrac.detach().item(), "ppo_kl": ppo_kl.detach().item()}
 
 
+def compute_policy_loss_importance_sampling(
+    old_log_prob, log_prob, advantages, eos_mask
+) -> Tuple[torch.Tensor, Dict]:
+    """
+    Compute importance sampling loss (unclipped policy gradient).
+
+    Args:
+        old_log_prob: Log probabilities from the sampling policy (π_old)
+        log_prob: Log probabilities from the current policy (π_θ)
+        advantages: Advantage estimates
+        eos_mask: Mask indicating valid positions (1 for valid, 0 for padding)
+        cliprange: Clip range (not used in standard importance sampling, kept for API compatibility)
+
+    Returns:
+        Tuple of (loss, metrics_dict)
+    """
+    # Compute importance ratio: π_θ / π_old
+    logprob_diff = log_prob - old_log_prob
+    # print(f"old_log_prob: {old_log_prob}")
+    # print(f"log_prob: {log_prob}")
+
+    prob_ratio = torch.exp(logprob_diff)
+
+    # Importance-weighted advantage
+
+    importance_weighted = prob_ratio * advantages
+
+    # Negative importance-weighted advantage (we want to maximize, so minimize negative)
+    elementwise_loss = -importance_weighted
+    # print(f"elementwise_loss: {elementwise_loss}")
+    # Aggregate loss over valid tokens
+    loss = masked_mean(elementwise_loss, eos_mask)
+    # print(f"loss: {loss}")
+    # Compute KL divergence for monitoring
+    approx_kl = masked_mean(-logprob_diff, eos_mask)
+
+    # Compute additional metrics
+    avg_ratio = masked_mean(prob_ratio, eos_mask)
+
+    # Advantage-specific metrics
+    adv_pos_mask = (advantages > 0) & eos_mask.bool()
+    adv_neg_mask = (advantages < 0) & eos_mask.bool()
+    adv_pos_count = adv_pos_mask.sum()
+    adv_neg_count = adv_neg_mask.sum()
+    avg_ratio_pos = masked_mean(prob_ratio, adv_pos_mask.float())
+    avg_ratio_neg = masked_mean(prob_ratio, adv_neg_mask.float())
+
+    metrics = {
+        "pg_loss": loss.detach().item(),
+        "approx_kl": approx_kl.detach().item(),
+        "avg_ratio": avg_ratio.detach().item(),
+        "adv_pos_count": adv_pos_count.detach().item(),
+        "adv_neg_count": adv_neg_count.detach().item(),
+        "avg_ratio_pos": avg_ratio_pos.detach().item(),
+        "avg_ratio_neg": avg_ratio_neg.detach().item(),
+    }
+
+    return loss, metrics
+
+
 def compute_policy_loss_impl(
     log_prob: torch.Tensor,
     data: dict,
@@ -271,6 +331,13 @@ def compute_policy_loss_impl(
             advantages=advantages,
             eos_mask=response_mask,
             cliprange=clip_ratio,
+        )
+    elif loss_func_type == "importance_sampling":
+        pg_loss, loss_metrics = compute_policy_loss_importance_sampling(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            eos_mask=response_mask,
         )
     else:
         raise RuntimeError(f"Not support loss_func_type: {loss_func_type}")

@@ -139,9 +139,24 @@ class BaseDataLoader(NexRLModule, ABC):
             list[dict[str, Any]]: List of n repeated items, each with group_id and run_id
         """
         repeated_items = []
-        import uuid
+        import hashlib
+        import json
 
-        group_id = str(uuid.uuid4())
+        # IMPORTANT: group_id must be stable across runs for reproducible GRPO ordering.
+        # Prefer an existing group_id, else derive deterministically from a stable task_id,
+        # else fall back to a prompt/content hash.
+        group_id = item.get("group_id", "") or ""
+        if not group_id:
+            if "task_id" in item:
+                group_id = f"task-{item['task_id']}"
+            elif "prompt" in item:
+                group_id = (
+                    f"prompt-{hashlib.sha256(str(item['prompt']).encode('utf-8')).hexdigest()[:16]}"
+                )
+            else:
+                # Last resort: hash stable JSON of the item contents
+                payload = json.dumps(item, sort_keys=True, default=str)
+                group_id = f"item-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
 
         for run_id in range(n):
             # Create a copy of the item
@@ -288,11 +303,20 @@ class SequentialDataLoader(BaseDataLoader, ABC):
         if not new_batch:  # Empty batch means no more data
             return False
 
-        # Apply rollout repetition if configured
-        # if self._rollout_repeat_n > 1:
+        # Apply rollout repetition if configured.
+        # We also ensure a stable per-item `task_id` exists so downstream ordering
+        # can be made reproducible across runs.
         if not self._is_validate:
+            base_index_start = self._data_index
             repeated_batch = []
-            for item in new_batch:
+            for j, item in enumerate(new_batch):
+                # Ensure stable task_id exists (do not override if user already provided one)
+                if "task_id" not in item:
+                    item = item.copy()
+                    # Prefer a dataset-provided stable index if present (e.g. TorchDataLoader adds `index`).
+                    # Fall back to a sequential counter for this run.
+                    item["task_id"] = item.get("index", base_index_start + j)
+
                 repeated_items = BaseDataLoader.repeat_item(item, self._rollout_repeat_n)
                 repeated_batch.extend(repeated_items)
             new_batch = repeated_batch
