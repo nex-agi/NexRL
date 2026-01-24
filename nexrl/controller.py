@@ -44,6 +44,7 @@ from .trainer import BaseTrainer
 from .trainer.remote_api_cross_entropy_trainer import RemoteApiCrossEntropyTrainer
 from .trainer.remote_api_grpo_trainer import RemoteApiGrpoTrainer
 from .trainer.self_hosted_grpo_trainer import SelfHostedGrpoTrainer
+from .trainer.self_hosted_opd_trainer import SelfHostedOpdTrainer
 from .trajectory_pool import TrajectoryPool
 from .utils.config_utils import insert_config, use_tinker, use_weaver
 from .utils.init_utils import create_train_service_client
@@ -628,6 +629,7 @@ class NexRLController:
             },
             NexRLRole.TRAINER: {
                 "self_hosted_grpo": SelfHostedGrpoTrainer,
+                "self_hosted_opd": SelfHostedOpdTrainer,
                 "remote_api_grpo": RemoteApiGrpoTrainer,
                 "remote_api_cross_entropy": RemoteApiCrossEntropyTrainer,
             },
@@ -778,6 +780,12 @@ class NexRLController:
 
         # Add train_service config directly to trainer
         insert_config(self._config.trainer, "train_service", self._config.service.train_service)
+
+        # Add teacher_service config to trainer if exists (for OPD)
+        if self._config.service.get("teacher_service", None) is not None:
+            insert_config(
+                self._config.trainer, "teacher_service", self._config.service.teacher_service
+            )
 
         if launch_mode == "ray":
             self._init_ray_resources(module_configs)

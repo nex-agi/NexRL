@@ -143,8 +143,9 @@ class SelfHostedTrainer(BaseTrainer):
                 except Exception as e:
                     logger.error(f"Failed to initialize workers: {e}")
                     experiment_path = os.environ.get("EXPERIMENT_PATH", "EXPERIMENT_PATH")
+                    identifier = self._config.train_service.get("identifier", "default")
                     api_server_log = f"{experiment_path}/api_server.log"
-                    workers_log = f"{experiment_path}/workers.log"
+                    workers_log = f"{experiment_path}/workers-{identifier}-rank*.log"
                     logger.error(
                         f"Please check **{api_server_log}** and **{workers_log}** for more detailed error information."
                     )

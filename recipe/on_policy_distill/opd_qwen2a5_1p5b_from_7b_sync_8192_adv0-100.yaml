@@ -1,0 +1,630 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+project_name: "NexRL-OPD"
+
+# experiment_name: Name for this specific experiment (used in logging/checkpoints)
+experiment_name: "opd-qwen2a5-1p5b-from-7b-sync-8192-adv0-100"
+
+# launch_mode: How to execute the training
+#   - local: Single-process execution
+#   - ray: Distributed execution with Ray
+launch_mode: "local"
+
+# multi_model: Enable training multiple models with the same trajectories
+#   - "false": Standard single-model training
+#   - "true": Each trajectory trains multiple models (experimental feature)
+multi_model: "false"
+
+#==========================================
+# LOGGING CONFIGURATION
+#==========================================
+# Control experiment tracking and monitoring
+
+logger:
+  # backend: List of logging backends to use simultaneously
+  #   - console: Print to stdout/stderr
+  #   - wandb: Weights & Biases (https://wandb.ai)
+  backend: ['console', 'wandb']
+  enable_feishu_logging: true
+  feishu_url: "https://open.feishu.cn/open-apis/bot/v2/hook/f8142f3a-2ccd-4fe1-90e7-f141c4474d35"
+
+#==========================================
+# RESUME CONFIGURATION
+#==========================================
+# Control checkpoint resumption behavior
+
+resume:
+  # mode: How to handle training resumption
+  #   - disable: Always start fresh training from scratch
+  #   - auto: Automatically resume from latest checkpoint if available
+  #   - from_path: Resume from specific checkpoint path (set resume_path below)
+  mode: disable
+
+  # resume_path: Path to checkpoint when mode="from_path"
+  # Example: "/path/to/checkpoint/step_1000"
+  resume_path: ""
+
+#==========================================
+# DATA LOADER CONFIGURATION
+#==========================================
+# Configure how training prompts are loaded and processed
+
+data:
+  # type: Data loader implementation
+  #   - mock: Synthetic data for testing/debugging
+  #   - torch: PyTorch DataLoader with real datasets
+  type: "torch"
+
+  # seed: Random seed for data shuffling/sampling (ensures reproducibility)
+  seed: 42
+
+  # data_files: Path to input data files (JSON, JSONL, Parquet, etc.)
+  data_files:
+    - "/gpfs/users/zhengrui/math/datasets/opensource/Skywork-OR1-RL-Data/train_rl/32b/train_size38710.parquet"
+
+  # batch_size: Number of prompts processed together
+  # For distillation, typically using larger batch for stability
+  batch_size: 32
+
+  # keep_batch_order: Whether to maintain batch ordering across iterations
+  keep_batch_order: true
+
+  # rollout_repeat_n: Number of responses to generate per prompt
+  # For distillation, typically 1 is sufficient
+  rollout_repeat_n: 1
+
+  # prompt_key: JSON key containing the prompt text
+  prompt_key: "prompt"
+
+  # filter_prompts: Whether to filter out invalid/too-long prompts inside dataloader
+  filter_prompts: false
+
+  # max_prompt_length: Maximum prompt length in tokens
+  max_prompt_length: 4096
+
+  # max_response_length: Maximum response length in tokens
+  max_response_length: 8192
+
+  # tokenizer_path: Path to tokenizer (HuggingFace format)
+  tokenizer_path: ${resource.inference.model_path}
+
+  # shuffle: Randomly shuffle data order each epoch
+  shuffle: true
+
+  # drop_last: Drop incomplete final batch if dataset size not divisible by batch_size
+  drop_last: true
+
+#==========================================
+# ROLLOUT CONFIGURATION
+#==========================================
+# Configure response generation (model inference)
+# The student model generates trajectories
+
+rollout_worker:
+  # type: Rollout worker implementation
+  #   - mock: Synthetic responses for testing
+  #   - simple: Basic inference wrapper
+  #   - agent: Agent-based rollout with task-specific logic
+  type: "agent"
+
+  # model_tag: Route rollouts to the correct trajectory pool
+  model_tag: ${service.inference_service.model_tag}
+
+  # num_workers: Number of parallel rollout workers
+  # Increase for higher throughput (requires more resources)
+  num_workers: 32
+
+  # need_llm_inference: Whether this rollout worker needs LLM inference
+  # Set to false for workers that don't call LLM APIs (e.g., mock workers)
+  need_llm_inference: true
+
+  # temperature: Sampling temperature for student generation
+  temperature: 0.6
+
+  # clip based opd
+  use_distillation_clipping: ${trainer.use_distillation_clipping}
+  distillation_cliprange: ${trainer.algorithm.distillation_cliprange}
+  distillation_cliprange_low: ${trainer.algorithm.distillation_cliprange_low}
+  distillation_cliprange_high: ${trainer.algorithm.distillation_cliprange_high}
+  do_old_student_log_prob_compute: ${trainer.algorithm.do_old_student_log_prob_compute}
+  train_token_start_pct: ${trainer.algorithm.train_token_start_pct}
+  train_token_end_pct: ${trainer.algorithm.train_token_end_pct}
+  advantage_start_pct: ${trainer.algorithm.advantage_start_pct}
+  advantage_end_pct: ${trainer.algorithm.advantage_end_pct}
+
+  # agent_cls: Agent class for task-specific logic (only for agent/tinker_agent types)
+  # Options: "single_turn_math", etc.
+  agent_cls: "single_turn_math"
+
+  # Agent-specific configuration
+  agent:
+    # Single-turn math agent settings
+    math:
+      judge_mode: "rule"  # "rule" or "llm" for math reward calculation
+
+  # max_prompt_length: Maximum tokens in input prompt
+  max_prompt_length: ${data.max_prompt_length}
+
+  # max_response_length: Maximum tokens in generated response
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# TRAJECTORY POOL CONFIGURATION
+#==========================================
+# Manage collected rollout trajectories before training
+
+trajectory_pool:
+  # type: Trajectory pool implementation
+  #   - default: Standard in-memory buffer
+  type: "default"
+
+  # batch_size: Should match data.batch_size * data.rollout_repeat_n
+  batch_size: ${data.batch_size}
+
+  # group_size: Number of trajectories to group together
+  # For distillation, group_size=1 (no grouping needed)
+  group_size: 1
+
+  # key_list: Additional keys to track in trajectories for grouping
+  key_list: []
+
+  # check_batch_ready_function: When to consider a training batch ready
+  #   - batch_size_reached: Once batch_size trajectories collected
+  #   - loaded_batch_finished: After all rollouts for current data batch complete
+  check_batch_ready_function: "loaded_batch_finished"
+
+#==========================================
+# TRAINER CONFIGURATION
+#==========================================
+# Combined trainer module containing algorithm processor and train worker
+
+trainer:
+  # type: Trainer implementation
+  #   - self_hosted_grpo: GRPO trainer for self-hosted backend
+  #   - self_hosted_opd: On-Policy Distillation trainer for self-hosted backend
+  type: "self_hosted_opd"
+
+  # max_prompt_length: Maximum tokens in input prompt
+  max_prompt_length: ${data.max_prompt_length}
+
+  # max_response_length: Maximum tokens in generated response
+  max_response_length: ${data.max_response_length}
+
+  # Clip-based distillation settings
+  use_distillation_clipping: false
+  distillation_cliprange: 0.2
+  distillation_cliprange_low: 0.2
+  distillation_cliprange_high: 0.2
+  do_old_student_log_prob_compute: false
+
+  # Token range configuration for selective training
+  train_token_start_pct: 0.0
+  train_token_end_pct: 1.0
+
+  # Advantage-based selection configuration
+  advantage_start_pct: 0.0
+  advantage_end_pct: 1.0
+
+  #----------------------------------------
+  # ALGORITHM CONFIGURATION
+  #----------------------------------------
+  # On-Policy Distillation Algorithm
+  algorithm:
+    # type: RL algorithm implementation
+    #   - distillation: On-Policy Distillation
+    type: "distillation"
+
+    # Distillation hyperparameters
+    distillation_coeff: 1.0
+    entropy_coeff: 0.00
+    temperature: ${rollout_worker.temperature}
+    loss_agg_mode: "token-mean"
+    distillation_epochs: 1
+
+    use_distillation_clipping: ${trainer.use_distillation_clipping}
+    distillation_cliprange: ${trainer.distillation_cliprange}
+    distillation_cliprange_low: ${trainer.distillation_cliprange_low}
+    distillation_cliprange_high: ${trainer.distillation_cliprange_high}
+    do_old_student_log_prob_compute: ${trainer.do_old_student_log_prob_compute}
+    train_token_start_pct: ${trainer.train_token_start_pct}
+    train_token_end_pct: ${trainer.train_token_end_pct}
+    advantage_start_pct: ${trainer.advantage_start_pct}
+    advantage_end_pct: ${trainer.advantage_end_pct}
+
+  #----------------------------------------
+  # TRAINING SETTINGS
+  #----------------------------------------
+  # Core training loop settings
+
+  # total_train_steps: Total number of training steps to run
+  # One step = one gradient update
+  total_train_steps: 1000
+
+  # save_freq: Save checkpoint every N steps
+  # Recommended: Save frequently enough to avoid losing progress
+  save_freq: 100
+
+  # checkpoint_path: Directory to save checkpoints
+  checkpoint_path: "${oc.env:EXPERIMENT_PATH}/ckpt"
+
+  # sync_weight_path: Path for weight synchronization between workers
+  sync_weight_path: "${oc.env:EXPERIMENT_PATH}/sync_weight"
+
+  # remove_previous_ckpt: Delete old checkpoints to save disk space
+  remove_previous_ckpt: false
+
+#==========================================
+# WEIGHT MANAGEMENT CONFIGURATION
+#==========================================
+# Control model weight synchronization between rollout and training
+
+weight:
+  # type: Weight management implementation
+  type: "default"
+
+  # sync_mode: How to synchronize weights between rollout and training workers
+  #   - sync: Wait for training before generating new rollouts (safest, slowest)
+  # Recommendation: For distillation, use "sync" mode to ensure student uses latest weights
+  sync_mode: "sync"
+
+  # staleness_threshold: Maximum steps a rollout worker can lag behind trainer
+  staleness_threshold: 0
+
+  # sync_method: Method for transferring weights
+  #   - network: Network-based transfer
+  sync_method: "network"
+
+  # sync_weight_path: Path for weight files
+  sync_weight_path: ${trainer.sync_weight_path}
+
+  # validate_freq: Inherit validation frequency
+  validate_freq: ${validate.eval.validate_freq}
+
+#==========================================
+# VALIDATION CONFIGURATION
+#==========================================
+# Periodic evaluation on held-out data
+
+validate:
+  # validate_before_train: Run validation before starting training
+  validate_before_train: false
+
+  # max_response_length: Maximum response length for validation
+  max_response_length: 8192
+
+  # data: Validation dataset configuration (similar to training data)
+  data:
+    type: "torch"
+    seed: ${data.seed}
+    data_files:
+      - "/gpfs/users/xizhiheng/data/math/test/math500/size500_4times.parquet"
+      - "/gpfs/users/xizhiheng/data/math/train/rl/AIME_COPY8/aime2024_8_COPY.parquet"
+      - "/gpfs/users/xizhiheng/data/math/train/rl/AIME_COPY8/aime2025_8_COPY.parquet"
+    batch_size: 256
+    prompt_key: "prompt"
+    filter_prompts: false
+    max_prompt_length: ${data.max_prompt_length}
+    tokenizer_path: ${data.tokenizer_path}
+    shuffle: true
+    drop_last: false
+
+  # eval: Evaluation settings
+  eval:
+    type: "default"
+
+    # validate_freq: Run validation every N training steps
+    validate_freq: 10
+
+#==========================================
+# SERVICE CONFIGURATION
+#==========================================
+# Configure external services for inference and training
+
+service:
+  #----------------------------------------
+  # Inference Service (Rollout/Generation)
+  #----------------------------------------
+  # This is the student model for generating rollouts
+  inference_service:
+    # model_tag: Identifier for multi-model training
+    model_tag: "student"
+
+    # api_key: Authentication key for inference API
+    api_key: "EMPTY"
+
+    # base_url: Base URL for inference service (student rollout generation)
+    base_url: http://${oc.env:INFERENCE_BASE_URL}
+
+    # model: Model identifier or name
+    model: ${resource.inference.served_model_name}
+
+    # max_tokens: Maximum tokens to generate per request
+    max_tokens: ${data.max_response_length}
+
+    # tokenizer: Tokenizer configuration
+    tokenizer: ${data.tokenizer_path}
+
+    # backend: Inference backend
+    backend: sglang
+
+    # max_retries: Number of retry attempts for failed inference requests
+    max_retries: 3
+
+    # freeze_for_weight_sync: Pause inference during weight updates
+    freeze_for_weight_sync: true
+
+    # weight_type: Format for weight files
+    weight_type: "sglang_nckpt"
+
+  #----------------------------------------
+  # Tinker Service (Optional - only for Tinker backend)
+  #----------------------------------------
+  tinker_service:
+    base_url: null
+    lora_rank: 32
+    api_key: ""
+
+  #----------------------------------------
+  # Student Training Service
+  #----------------------------------------
+  train_service:
+    # identifier: Worker group identifier for student (must match resource.train key)
+    identifier: "student"
+
+    # model_tag: Identifier for multi-model training
+    model_tag: "student"
+
+    # backend: Training backend
+    backend: http
+    world_size: 8
+
+    # url: Training service URL (if using remote training service)
+    url: "http://${oc.env:API_SERVER_URL}:8000"
+
+    # actor: Actor model configuration (student policy being trained)
+    actor:
+      # checkpoint_manager: Checkpoint format
+      checkpoint_manager: dcp
+
+      # model: Student model settings
+      model:
+        path: "${resource.inference.model_path}"
+        use_remove_padding: true
+
+      # Distillation Training Hyperparameters
+      ppo_mini_batch_size: ${data.batch_size}
+      ppo_micro_batch_size: 4
+      grad_clip: 1.0
+
+      # Clipping ratios (not used in distillation, but required by actor)
+      clip_ratio: 0.2
+      clip_ratio_low: 0.2
+      clip_ratio_high: 0.2
+      clip_ratio_c: 3.0
+
+      use_distillation_clipping: ${trainer.use_distillation_clipping}
+      distillation_cliprange: ${trainer.distillation_cliprange}
+      distillation_cliprange_low: ${trainer.distillation_cliprange_low}
+      distillation_cliprange_high: ${trainer.distillation_cliprange_high}
+      do_old_student_log_prob_compute: ${trainer.do_old_student_log_prob_compute}
+      train_token_start_pct: ${trainer.train_token_start_pct}
+      train_token_end_pct: ${trainer.train_token_end_pct}
+      advantage_start_pct: ${trainer.advantage_start_pct}
+      advantage_end_pct: ${trainer.advantage_end_pct}
+
+      loss_agg_mode: token-mean
+      loss_func_type: NX_20250515
+      entropy_coeff: ${trainer.algorithm.entropy_coeff}
+
+      # KL divergence loss settings (not used in distillation)
+      use_kl_loss: false
+      kl_loss_type: low_var_kl
+      kl_loss_coef: 0.0
+
+      # Parallelism settings
+      use_ring_sequence_parallel: false
+      ppo_epochs: ${trainer.algorithm.distillation_epochs}
+      ulysses_sequence_parallel_size: 2
+
+      # Dynamic batch sizing
+      use_dynamic_bsz: false
+      ppo_max_token_len_per_gpu: 16384
+
+      do_old_log_prob_compute: false
+
+      # Optimizer configuration
+      optim:
+        lr: 1e-6
+        lr_warmup_steps_ratio: 0.0
+        warmup_style: constant
+
+      # FSDP configuration
+      fsdp_config:
+        wrap_policy:
+          min_num_params: 0
+        param_offload: false
+        grad_offload: false
+        optimizer_offload: false
+        fsdp_size: -1
+
+      # Reference model configuration (not needed for distillation)
+      ref:
+        fsdp_config:
+          param_offload: true
+          wrap_policy:
+            min_num_params: 0
+        log_prob_micro_batch_size: 4
+        ulysses_sequence_parallel_size: 2
+
+      # Rollout configuration
+      rollout:
+        rollout_standalone: true
+        temperature: ${rollout_worker.temperature}
+        use_distillation_clipping: ${trainer.algorithm.use_distillation_clipping}
+        distillation_cliprange: ${trainer.algorithm.distillation_cliprange}
+        distillation_cliprange_low: ${trainer.algorithm.distillation_cliprange_low}
+        distillation_cliprange_high: ${trainer.algorithm.distillation_cliprange_high}
+        do_old_student_log_prob_compute: ${trainer.algorithm.do_old_student_log_prob_compute}
+        train_token_start_pct: ${trainer.algorithm.train_token_start_pct}
+        train_token_end_pct: ${trainer.algorithm.train_token_end_pct}
+        advantage_start_pct: ${trainer.algorithm.advantage_start_pct}
+        advantage_end_pct: ${trainer.algorithm.advantage_end_pct}
+        dtype: bfloat16
+        tensor_model_parallel_size: 2
+        log_prob_micro_batch_size: 4
+        n: ${data.rollout_repeat_n}
+        use_weight_provider: true
+
+  #----------------------------------------
+  # Teacher Training Service
+  #----------------------------------------
+  # Teacher model for computing log probabilities (used by OPD trainer)
+  teacher_service:
+    # identifier: Worker group identifier for teacher (must match resource.train key)
+    identifier: "teacher"
+    model_tag: "teacher"
+
+    # backend: Training backend
+    backend: http
+
+    # url: Training service URL
+    url: "http://${oc.env:API_SERVER_URL}:8000"
+
+    # actor: Teacher model configuration
+    actor:
+      # checkpoint_manager: Checkpoint format
+      checkpoint_manager: dcp
+
+      # model: Teacher model settings
+      model:
+        path: ${resource.teacher.model_path}
+        use_remove_padding: true
+
+      # Teacher Hyperparameters
+      ppo_mini_batch_size: ${data.batch_size}
+      ppo_micro_batch_size: 8
+      grad_clip: 1.0
+
+      clip_ratio: 0.2
+      clip_ratio_low: 0.2
+      clip_ratio_high: 0.2
+      clip_ratio_c: 3.0
+
+      loss_agg_mode: token-mean
+      loss_func_type: NX_20250515
+      entropy_coeff: ${trainer.algorithm.entropy_coeff}
+
+      use_kl_loss: false
+      kl_loss_type: low_var_kl
+      kl_loss_coef: 0.0
+
+      # Parallelism settings (larger for bigger model)
+      use_ring_sequence_parallel: false
+      ulysses_sequence_parallel_size: 4
+
+      use_dynamic_bsz: false
+      ppo_max_token_len_per_gpu: 16384
+      do_old_log_prob_compute: false
+
+      # Optimizer configuration (not used for teacher, but required)
+      optim:
+        lr: 1.0e-4
+        lr_warmup_steps_ratio: 0.0
+        warmup_style: constant
+
+      # FSDP configuration
+      fsdp_config:
+        wrap_policy:
+          min_num_params: 0
+        param_offload: false
+        grad_offload: false
+        optimizer_offload: false
+        fsdp_size: -1
+
+      # Reference model configuration
+      ref:
+        fsdp_config:
+          param_offload: true
+          wrap_policy:
+            min_num_params: 0
+        log_prob_micro_batch_size: 32
+        ulysses_sequence_parallel_size: 4
+
+      # Rollout configuration
+      rollout:
+        rollout_standalone: true
+        temperature: ${rollout_worker.temperature}
+        dtype: bfloat16
+        tensor_model_parallel_size: 2
+        log_prob_micro_batch_size: 32
+        n: ${data.rollout_repeat_n}
+        use_weight_provider: true
+
+#==========================================
+# RUNTIME MONITORING CONFIGURATION
+#==========================================
+# Health checks and error handling during training
+
+runtime_monitor:
+  exception_handling:
+    enabled: true
+    check_interval: 1.0
+    policy: "stop_on_error"
+
+  health_check:
+    enabled: true
+    check_interval: 10.0
+    timeout: 5.0
+
+# ============================================================================
+# Compute Resource Configuration (for Kubernetes deployment)
+# ============================================================================
+resource:
+  #----------------------------------------
+  # Training Resources (Student and Teacher)
+  #----------------------------------------
+  train:
+    # Student training resources
+    student:
+      world_size: 1          # Number of GPU pods for student
+      gpus_per_pod: 8        # GPUs per pod
+      memory_per_gpu: 200    # GPU memory in GB
+
+    # Teacher compute resources
+    teacher:
+      world_size: 1          # Number of GPU pods for teacher
+      gpus_per_pod: 8        # GPUs per pod
+      memory_per_gpu: 200    # GPU memory in GB
+
+  #----------------------------------------
+  # Student Inference Resources (for rollout)
+  #----------------------------------------
+  inference:
+    backend: bp-sglang
+    replicas: 4
+    gpus_per_replica: 2
+    served_model_name: "nexrl-rollout-qwen2a5-1p5b-opd"
+    model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-1.5B-Instruct"
+    extra_args: ""
+
+  #----------------------------------------
+  # Teacher Model Path
+  #----------------------------------------
+  teacher:
+    model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-7B-Instruct"
+
+  agent:
+    num_workers: 0          # Number of CPU agent worker pods
+    agents_per_worker: 32   # Agents per worker pod

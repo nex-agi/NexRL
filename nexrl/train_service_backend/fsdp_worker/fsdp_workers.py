@@ -491,6 +491,56 @@ class ModelWorker(Worker):
 
         return output
 
+    def update_actor_with_distillation(self, data: DataProto):
+        """Update actor using on-policy distillation with reverse KL loss"""
+        print(
+            f"[fsdp_workers.update_actor_with_distillation] Starting, data batch_size={len(data)}"
+        )
+        data = data.to("cuda")
+        data.batch = data.batch.cuda()
+        print(f"[fsdp_workers.update_actor_with_distillation] Data moved to cuda")
+
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            print(
+                f"[fsdp_workers.update_actor_with_distillation] Data preprocessed, calling actor.update_policy_with_distillation"
+            )
+
+            # Perform distillation training
+            from ..utils.core_utils import Timer
+
+            with Timer(name="update_policy_with_distillation", logger=None) as timer:
+                metrics = self.actor.update_policy_with_distillation(data=data)
+            delta_time = timer.last
+            print(
+                f"[fsdp_workers.update_actor_with_distillation] Training completed in {delta_time:.2f}s"
+            )
+
+            global_num_tokens = data.meta_info.get(
+                "global_token_num", len(data) * 512
+            )  # Rough estimate
+            estimated_flops, promised_flops = self.flops_counter.estimate_flops(
+                global_num_tokens, delta_time
+            )
+            distillation_epochs = data.meta_info.get("distillation_epochs", self.config.ppo_epochs)
+            metrics["mfu/actor"] = (
+                estimated_flops * distillation_epochs / promised_flops / self.world_size
+            )
+
+            self.actor_lr_scheduler.step()
+            lr = self.actor_lr_scheduler.get_last_lr()[0]
+            metrics["distill/lr"] = lr
+
+            output = DataProto(meta_info={"metrics": metrics})
+
+            output = self.ulysses_sharding_manager.postprocess_data(data=output)
+            output = output.to("cpu")
+            print(f"[fsdp_workers.update_actor_with_distillation] Completed, returning metrics")
+
+        # Offloading removed
+        torch.cuda.empty_cache()
+        return output
+
     def load_checkpoint(self, path, del_local_after_load=True, load_weight_only=False):
         # Offloading removed - model should remain on GPU
         self.checkpoint_manager.load_checkpoint(

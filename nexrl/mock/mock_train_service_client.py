@@ -44,6 +44,10 @@ class MockTrainServiceClient(TrainServiceClient):
         time.sleep(1)
         return {"meta_info": {"metrics": {"success": True}}}
 
+    def update_actor_with_distillation(self, batch: dict):
+        time.sleep(1)
+        return {"meta_info": {"metrics": {"success": True}}}
+
     def compute_log_prob(self, batch: dict) -> dict[str, dict[str, torch.Tensor]]:
         return {
             "batch": {

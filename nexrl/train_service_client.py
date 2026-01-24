@@ -90,6 +90,18 @@ class TrainServiceClient(ABC):
         """
 
     @abstractmethod
+    def update_actor_with_distillation(self, batch: dict) -> dict[str, Any]:
+        """
+        Update actor policy with distillation
+
+        Args:
+            batch: Data batch to send to workers
+
+        Returns:
+            Response dictionary with meta_info and metrics
+        """
+
+    @abstractmethod
     def compute_log_prob(self, batch: dict) -> dict[str, Any]:
         """
         Compute log probabilities

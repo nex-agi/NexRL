@@ -594,6 +594,9 @@ def process_parallel_group_operations(identifier: str):
             )
             queued_op.error = str(op_exc)
             queued_op.result = None
+            raise RuntimeError(
+                f"Failed to process queued operation {queued_op.operation_id}: {op_exc}"
+            )
 
         finally:
             if queued_op.result_future and queued_op.event_loop:
@@ -1223,6 +1226,54 @@ async def compute_log_prob(data: DataProtoRequest, identifier: Optional[str] = N
     except Exception as e:
         logger.error(f"Failed to compute log prob: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to compute log prob: {str(e)}")
+
+
+@app.post("/update_actor_with_distillation", response_model=DataProtoResponse)
+async def update_actor_with_distillation(data: DataProtoRequest, identifier: Optional[str] = None):
+    """Update actor using on-policy distillation with reverse KL loss
+
+    This operation requires GPU access and will be queued if GPU is occupied by another worker group.
+
+    Args:
+        data: Data to send to workers (should include teacher_logits)
+        identifier: Worker group identifier. If None, uses the only/first group.
+    """
+    try:
+        logger.info(
+            f"[update_actor_with_distillation] Received request with identifier={identifier}"
+        )
+        # Get coordinator to validate identifier
+        get_coordinator(identifier)
+
+        # Use identifier from coordinator if not explicitly provided
+        if identifier is None:
+            identifier = next(iter(zmq_coordinators.keys()))
+
+        logger.info(f"[update_actor_with_distillation] Using identifier: {identifier}")
+
+        # Convert request to DataProto
+        data_proto = convert_request_to_data_proto(data)
+        logger.info(
+            f"[update_actor_with_distillation] Data converted to DataProto, batch_size={len(data_proto)}"
+        )
+
+        # Queue the data operation (requires GPU)
+        logger.info(f"[update_actor_with_distillation] Submitting queued operation...")
+        result_data_proto = await submit_queued_operation(
+            identifier=identifier,
+            operation_type="data_operation",
+            data={"operation": "update_actor_with_distillation", "data_proto": data_proto},
+            requires_gpu=True,
+        )
+
+        logger.info(f"[update_actor_with_distillation] Operation completed, converting response")
+        return DataProtoResponse.from_data_proto(result_data_proto)
+
+    except Exception as e:
+        logger.error(f"Failed to update actor with distillation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update actor with distillation: {str(e)}"
+        )
 
 
 @app.post("/compute_ref_log_prob", response_model=DataProtoResponse)

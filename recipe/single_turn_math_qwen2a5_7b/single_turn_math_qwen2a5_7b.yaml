@@ -1,0 +1,591 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+project_name: "NexRL-debug-2"
+
+# experiment_name: Name for this specific experiment (used in logging/checkpoints)
+experiment_name: "nexrl-single_turn_math"
+
+# launch_mode: How to execute the training
+#   - local: Single-process execution
+#   - ray: Distributed execution with Ray
+launch_mode: "local"
+
+# multi_model: Enable training multiple models with the same trajectories
+#   - "false": Standard single-model training
+#   - "true": Each trajectory trains multiple models (experimental feature)
+multi_model: "false"
+
+#==========================================
+# LOGGING CONFIGURATION
+#==========================================
+# Control experiment tracking and monitoring
+
+logger:
+  # backend: List of logging backends to use simultaneously
+  #   - console: Print to stdout/stderr
+  #   - wandb: Weights & Biases (https://wandb.ai)
+  backend: ['console', 'wandb']
+  enable_feishu_logging: true
+  feishu_url: "https://open.feishu.cn/open-apis/bot/v2/hook/f8142f3a-2ccd-4fe1-90e7-f141c4474d35"
+
+#==========================================
+# RESUME CONFIGURATION
+#==========================================
+# Control checkpoint resumption behavior
+
+resume:
+  # mode: How to handle training resumption
+  #   - disable: Always start fresh training from scratch
+  #   - auto: Automatically resume from latest checkpoint if available
+  #   - from_path: Resume from specific checkpoint path (set resume_path below)
+  mode: disable
+
+  # resume_path: Path to checkpoint when mode="from_path"
+  # Example: "/path/to/checkpoint/step_1000"
+  resume_path: ""
+
+#==========================================
+# DATA LOADER CONFIGURATION
+#==========================================
+# Configure how training prompts are loaded and processed
+
+data:
+  # type: Data loader implementation
+  #   - mock: Synthetic data for testing/debugging
+  #   - torch: PyTorch DataLoader with real datasets
+  type: "torch"
+
+  # seed: Random seed for data shuffling/sampling (ensures reproducibility)
+  seed: 42
+
+  # data_files: Path to input data files (JSON, JSONL, Parquet, etc.)
+  # Example: "/data/prompts.jsonl" or "/data/*.parquet"
+  data_files:
+    - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level1_train_size5369.parquet"
+    - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level2_train_size10246.parquet"
+    - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level3_train_size10742.parquet"
+    - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level4_train_size10131.parquet"
+    - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level5_train_size8728.parquet"
+
+  # batch_size: Number of prompts processed together
+  batch_size: 28
+
+  # keep_batch_order: Whether to maintain batch ordering across iterations
+  keep_batch_order: true
+
+  # rollout_repeat_n: Number of responses to generate per prompt
+  rollout_repeat_n: 8
+
+  # prompt_key: JSON key containing the prompt text
+  prompt_key: "prompt"
+
+  # filter_prompts: Whether to filter out invalid/too-long prompts inside dataloader
+  filter_prompts: false
+
+  # max_prompt_length: Maximum prompt length in tokens
+  # Prompts exceeding this will be truncated or filtered (see filter_prompts)
+  max_prompt_length: 4096
+
+  max_response_length: 8192
+
+  # tokenizer_path: Path to tokenizer (HuggingFace format)
+  # Example: "meta-llama/Llama-2-7b-hf" or "/local/path/to/tokenizer"
+  tokenizer_path: ${resource.inference.model_path}
+
+  # shuffle: Randomly shuffle data order each epoch
+  shuffle: true
+
+  # drop_last: Drop incomplete final batch if dataset size not divisible by batch_size
+  drop_last: true
+
+#==========================================
+# ROLLOUT CONFIGURATION
+#==========================================
+# Configure response generation (model inference)
+
+rollout_worker:
+  # type: Rollout worker implementation
+  #   - mock: Synthetic responses for testing
+  #   - simple: Basic inference wrapper
+  #   - single_turn_math: Specialized for math problems
+  #   - ...: More rollout worker implementations
+  type: "agent"
+
+  # num_workers: Number of parallel rollout workers
+  # Increase for higher throughput (requires more resources)
+  num_workers: 224
+
+  # need_llm_inference: Whether this rollout worker needs LLM inference
+  # Set to false for workers that don't call LLM APIs (e.g., mock workers)
+  need_llm_inference: true
+
+  # temperature: Sampling temperature for response generation
+  temperature: 1.0
+
+  # agent_cls: Agent class for task-specific logic (only for agent/tinker_agent types)
+  # Options: "single_turn_math", etc.
+  agent_cls: "single_turn_math"
+
+  # Agent-specific configuration
+  agent:
+    # Single-turn math agent settings
+    math:
+      judge_mode: "rule"  # "rule" or "llm" for math reward calculation
+
+  # max_prompt_length: Maximum tokens in input prompt
+  max_prompt_length: ${data.max_prompt_length}
+
+  # max_response_length: Maximum tokens in generated response
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# TRAJECTORY POOL CONFIGURATION
+#==========================================
+# Manage collected rollout trajectories before training
+
+trajectory_pool:
+  # type: Trajectory pool implementation
+  #   - default: Standard in-memory buffer
+  type: "default"
+
+  # batch_size: Inherit from data loader
+  batch_size: 224
+
+  # group_size: Number of trajectories to group together
+  # Useful for grouped advantage computation
+  group_size: 1
+
+  # key_list: Additional keys to track in trajectories for grouping
+  # Example: ["rewards", "advantages", "custom_metric"]
+  key_list: []
+
+  # check_batch_ready_function: When to consider a training batch ready
+  #   - batch_size_reached: Once batch_size trajectories collected
+  #   - loaded_batch_finished: After all rollouts for current data batch complete
+  #   - batch_size_reached_and_loaded_batch_finished: Satisfy both conditions
+  check_batch_ready_function: "loaded_batch_finished"
+
+#==========================================
+# TRAINER CONFIGURATION
+#==========================================
+# Combined trainer module containing algorithm processor and train worker
+
+trainer:
+  # type: Trainer implementation
+  type: "self_hosted_grpo"
+
+  # max_prompt_length: Maximum tokens in input prompt
+  max_prompt_length: ${data.max_prompt_length}
+
+  # max_response_length: Maximum tokens in generated response
+  max_response_length: ${data.max_response_length}
+
+  #----------------------------------------
+  # ALGORITHM CONFIGURATION
+  #----------------------------------------
+  # RL algorithm settings and hyperparameters
+  algorithm:
+    # type: RL algorithm implementation
+    #   - mock: No-op for testing
+    #   - grpo: Group Relative Policy Optimization
+    type: "grpo"
+
+    # do_old_log_prob_compute: Compute log probabilities with old policy
+    do_old_log_prob_compute: true
+
+    # use_kl_in_reward: Add KL divergence penalty to reward signal
+    use_kl_in_reward: false
+
+    # kl_penalty: KL penalty type
+    kl_penalty: kl
+
+    # kl_ctrl: KL divergence control settings
+    kl_ctrl:
+      # type: How to adjust KL coefficient over training
+      #   - fixed: Constant coefficient
+      #   - adaptive: Adjust based on measured KL divergence
+      type: fixed
+
+      # kl_coef: Base KL penalty coefficient
+      kl_coef: 0.001
+
+      # kl_reward_coef: Coefficient for KL term in reward computation
+      kl_reward_coef: ${trainer.algorithm.kl_ctrl.kl_coef}
+
+  #----------------------------------------
+  # TRAINING SETTINGS
+  #----------------------------------------
+  # Core training loop settings
+
+  # total_train_steps: Total number of training steps to run
+  # One step = one gradient update
+  total_train_steps: 200
+
+  # save_freq: Save checkpoint every N steps
+  # Recommended: Save frequently enough to avoid losing progress
+  save_freq: 0
+
+  # checkpoint_path: Directory to save checkpoints
+  # Example: "/checkpoints/my_experiment"
+  checkpoint_path: "${oc.env:EXPERIMENT_PATH}/ckpt"
+
+  # sync_weight_path: Path for weight synchronization between workers
+  # Used in distributed/async training modes
+  sync_weight_path: "${oc.env:EXPERIMENT_PATH}/sync_weight"
+
+  # remove_previous_ckpt: Delete old checkpoints to save disk space
+  # Warning: Set to false if you want to keep all checkpoints
+  remove_previous_ckpt: false
+
+#==========================================
+# WEIGHT MANAGEMENT CONFIGURATION
+#==========================================
+# Control model weight synchronization between rollout and training
+
+weight:
+  # type: Weight management implementation
+  type: "default"
+
+  # sync_mode: How to synchronize weights between rollout and training workers
+  #   - sync: Wait for training before generating new rollouts (safest, slowest)
+  #   - fully-async: No synchronization, maximum parallelism (fastest, potentially unstable)
+  #   - batch-async: Sync after batches, balance speed and stability
+  # Recommendation: Start with "sync", try "batch-async" after validation
+  sync_mode: "sync"
+
+  # staleness_threshold: Maximum steps a rollout worker can lag behind trainer
+  # Only applies to async modes (fully-async, batch-async)
+  staleness_threshold: 0
+
+  # sync_method: Method for transferring weights
+  #   - mock: No actual transfer (testing only)
+  #   - disk: Disk-based transfer
+  #   - network: Network-based transfer (not implemented yet)
+  #   - tinker: Tinker path-based synchronization
+  sync_method: "network"
+
+  # sync_weight_path: Path for weight files
+  sync_weight_path: ${trainer.sync_weight_path}
+
+  # validate_freq: Inherit validation frequency
+  validate_freq: ${validate.eval.validate_freq}
+
+#==========================================
+# VALIDATION CONFIGURATION
+#==========================================
+# Periodic evaluation on held-out data
+
+validate:
+  # validate_before_train: Run validation before starting training
+  # Useful to establish baseline performance
+  validate_before_train: false
+
+  # data: Validation dataset configuration (similar to training data)
+  data:
+    type: "mock"
+    seed: ${data.seed}
+    data_files:
+      - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level1_test_size100.parquet"
+      - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level2_test_size100.parquet"
+      - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level3_test_size100.parquet"
+      - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level4_test_size100.parquet"
+      - "/gpfs/users/zhengrui/math/train/rl/bp_math/all/0408_system_prompt/level5_test_size100.parquet"
+    batch_size: 256
+    prompt_key: "prompt"
+    filter_prompts: false
+    max_prompt_length: ${data.max_prompt_length}
+    tokenizer_path: ${data.tokenizer_path}
+    shuffle: true
+    drop_last: false
+
+  # eval: Evaluation settings
+  eval:
+    type: "default"
+
+    # validate_freq: Run validation every N training steps
+    #   - 0: Disabled
+    #   - >0: Run every N steps (e.g., 100 = validate every 100 steps)
+    # Recommendation: Set based on total_train_steps (e.g., every 10-20%)
+    validate_freq: 0
+
+#==========================================
+# SERVICE CONFIGURATION
+#==========================================
+# Configure external services for inference and training
+# Note: This section contains production model paths and API endpoints
+
+service:
+  #----------------------------------------
+  # Inference Service (Rollout/Generation)
+  #----------------------------------------
+  inference_service:
+    # model_tag: Identifier for multi-model training (currently single-model only)
+    model_tag: "default"
+
+    # api_key: Authentication key for inference API
+    api_key: "EMPTY"
+
+    # base_url: Base URL for inference service
+    # Example: "http://localhost:8000"
+    base_url: http://${oc.env:INFERENCE_BASE_URL}
+
+    # model: Model identifier or name
+    # Example: "meta-llama/Llama-2-7b-hf"
+    model: ${resource.inference.served_model_name}
+
+    # max_tokens: Maximum tokens to generate per request
+    max_tokens: ${data.max_response_length}
+
+    # tokenizer: Tokenizer configuration
+    tokenizer: ${data.tokenizer_path}
+
+    # backend: Inference backend
+    #   - sglang: SGLang inference engine
+    #   - vllm: vLLM inference engine
+    #   - tinker: Tinker training/inference service
+    backend: sglang
+
+    # max_retries: Number of retry attempts for failed inference requests
+    max_retries: 3
+
+    # freeze_for_weight_sync: Pause inference during weight updates
+    # Set to true if inference backend cannot handle concurrent weight updates
+    freeze_for_weight_sync: true
+
+    # weight_type: Format for weight files
+    #   - sglang_nckpt: SGLang native checkpoint
+    weight_type: "sglang_nckpt"
+
+  #----------------------------------------
+  # Tinker Service (Optional - only for Tinker backend)
+  #----------------------------------------
+  tinker_service:
+    # base_url: Tinker API base URL (null = use default)
+    base_url: null
+
+    # lora_rank: LoRA rank for training
+    lora_rank: 32
+
+    # api_key: Tinker API key
+    api_key: ""
+
+  #----------------------------------------
+  # Training Service
+  #----------------------------------------
+  train_service:
+    # model_tag: Identifier for multi-model training
+    model_tag: "default"
+
+    # backend: Training backend
+    #   - mock: No-op for testing
+    #   - nextrainer: NexTrainer framework
+    #   - tinker: Tinker training service
+    backend: http
+    world_size: 8
+
+    # url: Training service URL (if using remote training service)
+    url: "http://${oc.env:API_SERVER_URL}:8000"
+
+    # actor: Actor model configuration (policy being trained)
+    actor:
+      # checkpoint_manager: Checkpoint format
+      #   - dcp: Distributed Checkpoint (PyTorch native)
+      #   - huggingface: HuggingFace Transformers format
+      checkpoint_manager: dcp
+
+      # model: Actor model settings
+      model:
+        path: "${resource.inference.model_path}"
+        use_remove_padding: true
+
+      # PPO Training Hyperparameters
+
+      # ppo_mini_batch_size: Size of mini-batches for PPO updates
+      ppo_mini_batch_size: 28
+
+      # ppo_micro_batch_size: Micro-batch size for gradient accumulation
+      ppo_micro_batch_size: 4
+
+      # grad_clip: Gradient clipping threshold (prevents exploding gradients)
+      grad_clip: 1.0
+
+      # Clipping ratios for PPO objective (prevents large policy updates)
+      clip_ratio: 0.2
+      clip_ratio_low: 0.2
+      clip_ratio_high: 0.2
+      clip_ratio_c: 3.0
+
+      # loss_agg_mode: How to aggregate loss across tokens
+      loss_agg_mode: token-mean
+
+      # loss_func_type: Loss function variant
+      # NX_20250515: Custom loss function
+      loss_func_type: NX_20250515
+
+      # entropy_coeff: Coefficient for entropy bonus in loss
+      entropy_coeff: 1e-4
+
+      # KL divergence loss settings (regularization)
+      use_kl_loss: false
+      # kl_loss_type: Type of KL computation
+      kl_loss_type: low_var_kl
+      # kl_loss_coef: Weight of KL loss term
+      kl_loss_coef: 0.0
+
+      # Parallelism and distributed training settings
+
+      # use_ring_sequence_parallel: Enable ring-style sequence parallelism
+      # Useful for very long sequences
+      use_ring_sequence_parallel: false
+
+      # ppo_epochs: Number of PPO update epochs per batch
+      ppo_epochs: 1
+
+      # ulysses_sequence_parallel_size: Degree of Ulysses sequence parallelism
+      ulysses_sequence_parallel_size: 4
+
+      # Dynamic batch sizing (experimental)
+      # use_dynamic_bsz: Automatically adjust batch size based on sequence lengths
+      use_dynamic_bsz: false
+      # ppo_max_token_len_per_gpu: Maximum tokens per GPU when using dynamic batching
+      ppo_max_token_len_per_gpu: 16384
+
+      # do_old_log_prob_compute: Compute log probs with old policy
+      do_old_log_prob_compute: true
+
+      # Optimizer configuration
+      optim:
+        # lr: Learning rate
+        lr: 2e-6
+
+        # lr_warmup_steps_ratio: Fraction of training for learning rate warmup
+        lr_warmup_steps_ratio: 0.0
+
+        # warmup_style: Learning rate warmup schedule
+        #   - constant: No warmup
+        #   - linear: Linear increase
+        #   - cosine: Cosine schedule
+        warmup_style: constant
+
+      # FSDP (Fully Sharded Data Parallel) configuration
+      # Enables training very large models by sharding parameters across GPUs
+      fsdp_config:
+        wrap_policy:
+          # min_num_params: Minimum parameters in a module to apply FSDP wrapping
+          min_num_params: 0
+
+        # Offload options (save GPU memory by moving to CPU/disk)
+        param_offload: false      # Offload parameters
+        grad_offload: false        # Offload gradients
+        optimizer_offload: false   # Offload optimizer states
+
+        # fsdp_size: Number of GPUs for FSDP group
+        fsdp_size: -1
+
+      # Reference model configuration (for KL penalty)
+      ref:
+        fsdp_config:
+          # Offload reference model parameters to save GPU memory
+          param_offload: true
+          wrap_policy:
+            min_num_params: 0
+
+        # log_prob_micro_batch_size: Micro-batch size for reference model log prob computation
+        log_prob_micro_batch_size: 4
+
+        # ulysses_sequence_parallel_size: Sequence parallelism for reference model
+        ulysses_sequence_parallel_size: 4
+
+      # Rollout configuration (if using integrated rollout)
+      rollout:
+        # rollout_standalone: Whether rollout runs in separate process. Always true in NexRL.
+        rollout_standalone: true
+
+        # temperature: Sampling temperature for generation
+        temperature: ${rollout_worker.temperature}
+
+        # dtype: Data type for model weights and activations
+        dtype: bfloat16
+
+        # tensor_model_parallel_size: Tensor parallelism degree
+        # Splits model layers across GPUs
+        tensor_model_parallel_size: 2
+
+        # log_prob_micro_batch_size: Micro-batch size for log prob computation
+        log_prob_micro_batch_size: 4
+
+        # n: Number of samples per prompt (inherit from data config)
+        n: ${data.rollout_repeat_n}
+
+        use_weight_provider: true
+
+#==========================================
+# RUNTIME MONITORING CONFIGURATION
+#==========================================
+# Health checks and error handling during training
+
+runtime_monitor:
+  #----------------------------------------
+  # Exception Handling
+  #----------------------------------------
+  exception_handling:
+    # enabled: Whether to monitor and handle exceptions
+    enabled: true
+
+    # check_interval: Seconds between exception checks
+    check_interval: 1.0
+
+    # policy: How to handle encountered exceptions
+    #   - stop_on_error: Stop training on any error (safest)
+    #   - continue: Log error and continue (risky, may cause cascading failures)
+    #   - stop_on_critical: Continue on warnings, stop on critical errors
+    policy: "stop_on_error"
+
+  #----------------------------------------
+  # Module Liveness Monitoring
+  #----------------------------------------
+  health_check:
+    # enabled: Whether to monitor module health
+    enabled: true
+
+    # check_interval: Seconds between health checks
+    check_interval: 10.0
+
+    # timeout: Seconds to wait for health check response (Ray mode only)
+    timeout: 5.0
+
+# ============================================================================
+# Compute Resource Configuration (for Kubernetes deployment)
+# ============================================================================
+resource:
+  train:
+    nexrl-group-1: # identifier
+      world_size: 1          # Number of GPU pods for this identifier
+      gpus_per_pod: 8        # GPUs per pod (kept in sync with train_parallel.gpus_per_pod)
+      memory_per_gpu: 200    # GPU memory in GB
+
+  inference:
+    backend: bp-sglang
+    replicas: 4
+    gpus_per_replica: 2
+    served_model_name: "nexrl-rollout-qwen2a5-7b-math"
+    model_path: "/gpfs/users/zhouenyu/r1_sft/converted_ckpts_v3/sft-qwen2a5-7b-math-base-enyu-20250402-v3-aops-dedup-13w-5e5-0/iter_0006369_HF"
+    # Extra arguments to pass to NorthServe launch command
+    # Example: '--extra-cmds "--tool-call-parser qwen25"' for tool calling support
+    extra_args: ""
+
+  agent:
+    num_workers: 0          # Number of CPU agent worker pods
+    agents_per_worker: 32   # Agents per worker pod

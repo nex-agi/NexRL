@@ -64,7 +64,10 @@ class BaseTrainer(NexRLModule):
         self._trajectory_pool: "TrajectoryPool" = None  # type: ignore
         self._weight_sync_controller: "WeightSyncController" = None  # type: ignore
 
-        self._model_tag = "default"  # TODO: should be configurable  # pylint: disable=fixme
+        self._model_tag = config.get(
+            "model_tag",
+            config.get("train_service", {}).get("model_tag", "default"),
+        )
 
         # Timing tracking
         self._batch_count: int = 0
