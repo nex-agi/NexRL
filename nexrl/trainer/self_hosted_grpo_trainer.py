@@ -119,6 +119,11 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         # Step 0: Log rollout metrics
         self._log_rollout_metrics(batch)
 
+        # Step 0.5: Deterministically order samples so GRPO grouping is stable across runs.
+        # Rollouts arrive from many parallel workers, so arrival order is nondeterministic.
+        # We sort by (group_id/uid, run_id) to make the resulting advantages tensor reproducible.
+        batch = self._reorder_batch_by_group_and_run_id(batch)
+
         # Step 1: Prepare batch for training
         batch.metadata["global_token_num"] = torch.sum(
             batch.values["attention_mask"] * batch.values["loss_mask"], dim=-1
@@ -191,6 +196,15 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         # Compute GRPO advantages
         batch = self._compute_advantage(batch)
 
+        # Log GRPO (advantage) statistics
+        if "advantages" in batch.values:
+            advantages = batch.values["advantages"]
+            advantages_np = advantages.detach().cpu().numpy()
+            metrics["grpo/advantage/mean"] = float(np.mean(advantages_np))
+            metrics["grpo/advantage/std"] = float(np.std(advantages_np))
+            metrics["grpo/advantage/min"] = float(np.min(advantages_np))
+            metrics["grpo/advantage/max"] = float(np.max(advantages_np))
+
         # Add GRPO std metrics
         if "grpo_std" in batch.metadata:
             grpo_std_lst = list(batch.metadata["grpo_std"].values())
@@ -206,6 +220,79 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
 
         return batch, metrics
 
+    @staticmethod
+    def _reorder_batch_by_group_and_run_id(batch: Batch) -> Batch:
+        """
+        Reorder the batch deterministically by (group_id/uid, run_id).
+
+        This ensures GRPO grouping/iteration order and within-group sample order
+        are stable even when trajectories are produced asynchronously.
+        """
+        bsz = len(batch)
+        if bsz <= 1:
+            return batch
+
+        # Choose GRPO grouping key consistent with _compute_advantage.
+        # Note: group_id may be generated via uuid (see BaseDataLoader.repeat_item),
+        # which is *not stable across separate experiment runs*. For reproducible
+        # ordering across runs, prefer a stable "task_id" when available.
+        if "uid" in batch.values:
+            group_ids = batch.values["uid"]
+        elif "group_id" in batch.values:
+            group_ids = batch.values["group_id"]
+        else:
+            # Not a GRPO-style batch; leave unchanged.
+            return batch
+
+        if "run_id" not in batch.values:
+            return batch
+        run_ids = batch.values["run_id"]
+
+        order_ids = batch.values.get("task_id", None)
+
+        logger.info(f"order_ids: {order_ids}")
+
+        def _to_py(v: Any) -> Any:
+            if hasattr(v, "item"):
+                try:
+                    return v.item()
+                except Exception:
+                    return v
+            return v
+
+        def _stable_sort_key(x: Any) -> tuple[int, Any]:
+            x_py = _to_py(x)
+            # Keep numeric ids ordered numerically; strings/others ordered lexicographically.
+            if isinstance(x_py, (int, np.integer)):
+                return (0, int(x_py))
+            return (1, str(x_py))
+
+        keys: list[tuple[tuple[int, Any], tuple[int, Any], int, int]] = []
+        for i in range(bsz):
+            o = (
+                order_ids[i]
+                if order_ids is not None and isinstance(order_ids, (list, np.ndarray, torch.Tensor))
+                else order_ids
+            )
+            g = (
+                group_ids[i]
+                if isinstance(group_ids, (list, np.ndarray, torch.Tensor))
+                else group_ids
+            )
+            r = run_ids[i] if isinstance(run_ids, (list, np.ndarray, torch.Tensor)) else run_ids
+            r_py = _to_py(r)
+            try:
+                r_int = int(r_py)
+            except Exception:
+                r_int = 0
+            # Primary: stable task ordering (task_id if present), otherwise by group_id/uid.
+            # Secondary: group_id/uid, then run_id.
+            primary = _stable_sort_key(o) if order_ids is not None else _stable_sort_key(g)
+            keys.append((primary, _stable_sort_key(g), r_int, i))
+
+        perm = [i for _, _, _, i in sorted(keys)]
+        return batch.reorder(perm)
+
     def _compute_old_log_probs(self, batch: Batch) -> torch.Tensor:
         """
         Recompute old log probs using the train service client.
@@ -219,6 +306,15 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         with self._train_service_client.actor_context():
             ret = self._train_service_client.compute_log_prob(batch.to_nextrainer_batch())
         old_log_probs: torch.Tensor = ret["batch"]["old_log_probs"]
+
+        # Dump old_log_probs for debug
+        if self._data_dumper.should_dump("old_log_probs", self._train_step):
+            batch_info = {
+                "batch_size": len(batch),
+                "input_ids_shape": list(batch.values["input_ids"].shape),
+            }
+            self._data_dumper.dump_old_log_probs(self._train_step, old_log_probs, batch_info)
+
         return old_log_probs
 
     def _reward_fn(self, batch: Batch) -> torch.Tensor:

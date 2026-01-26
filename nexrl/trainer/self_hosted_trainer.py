@@ -28,6 +28,7 @@ from omegaconf import DictConfig
 
 from ..inference_service_client import hf_tokenizer
 from ..nexrl_types import Batch, Trajectory
+from ..utils.data_dumper import get_data_dumper
 from ..utils.init_utils import create_train_service_client
 from ..utils.torch_functional import compute_position_id_with_mask, padding_data
 from .base_trainer import BaseTrainer
@@ -92,6 +93,9 @@ class SelfHostedTrainer(BaseTrainer):
         # Background checkpoint saving
         self._save_thread: threading.Thread | None = None
 
+        # Initialize data dumper for debug data collection
+        self._data_dumper = get_data_dumper(config, rank=0, key="trainer")
+
         logger.info("SelfHostedTrainer initialized")
 
     def initialize_workers(self) -> None:
@@ -108,6 +112,27 @@ class SelfHostedTrainer(BaseTrainer):
 
                 train_service_config = self._config.train_service
                 config_dict = OmegaConf.to_container(train_service_config, resolve=True)
+
+                # Merge debug config into actor config for DataDumper initialization
+                # NOTE: self._config is a sub-config (config.trainer), so we need to check
+                # the parent chain to find debug config at the root level.
+                debug_config = self._config.get("debug", None)
+                if debug_config is None:
+                    parent = getattr(self._config, "_parent", None)
+                    if parent is not None:
+                        debug_config = parent.get("debug", None)
+
+                if debug_config is not None and "actor" in config_dict:
+                    config_dict["actor"]["debug"] = OmegaConf.to_container(
+                        debug_config, resolve=True
+                    )
+                    logger.info(
+                        f"[DEBUG] Added debug config to actor: {config_dict['actor'].get('debug')}"
+                    )
+                else:
+                    logger.info(
+                        f"[DEBUG] debug_config={debug_config}, 'actor' in config_dict={'actor' in config_dict}"
+                    )
 
                 # Initialize workers with config
                 try:
@@ -183,6 +208,10 @@ class SelfHostedTrainer(BaseTrainer):
         """
         logger.info("SelfHostedTrainer begin")
 
+        # Dump trajectories before processing (for debug)
+        if self._data_dumper.should_dump("trajectory", self._train_step):
+            self._data_dumper.dump_trajectory(self._train_step, trajectories)
+
         # Step 1: Process trajectories to add padding and tensor fields
         trajectories = self._process_trajectories(trajectories)
 
@@ -200,6 +229,9 @@ class SelfHostedTrainer(BaseTrainer):
         # Step 4: Execute training step
         batch_start_time = time.time()
         batch_size = len(batch)
+
+        # Propagate trainer-side global step to workers (used for easy_dump filenames, etc.)
+        batch.metadata["global_step"] = self._train_step
 
         with self._train_service_client.actor_context():
             logger.info(f"Begin training batch with size: {batch_size} in actor context")
@@ -393,5 +425,12 @@ class SelfHostedTrainer(BaseTrainer):
     def _reduce_metrics(metrics: dict) -> dict:
         """Reduce metrics by computing mean of each value."""
         for key, val in metrics.items():
-            metrics[key] = np.mean(val)
+            if val is None:
+                metrics[key] = None
+            elif isinstance(val, list):
+                # Filter out None values before computing mean
+                filtered = [v for v in val if v is not None]
+                metrics[key] = np.mean(filtered) if filtered else None
+            else:
+                metrics[key] = np.mean(val)
         return metrics
