@@ -17,6 +17,8 @@ Single Process Actor
 """
 
 import itertools
+import os
+import re
 from functools import partial
 from typing import Iterable, Tuple
 
@@ -25,6 +27,7 @@ from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpa
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
+from ...utils.data_dumper import get_data_dumper
 from ..utils import core_algos
 from ..utils import core_utils as nx_utils
 from ..utils.core_utils import (
@@ -64,7 +67,7 @@ class DataParallelPPOActor:
 
         if role == "actor":
             self.loss_func_type = self.config.loss_func_type
-            assert self.loss_func_type in ["NX_20250515", "NX_20241031"]
+            assert self.loss_func_type in ["NX_20250515", "NX_20241031", "importance_sampling"]
 
             self.do_old_log_prob_compute = self.config.do_old_log_prob_compute
             clip_ratio = self.config.clip_ratio
@@ -90,13 +93,40 @@ class DataParallelPPOActor:
                 do_old_log_prob_compute=self.do_old_log_prob_compute,
             )
 
-    def _forward_micro_batch(self, micro_batch, temperature) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Initialize data dumper for debug data collection (reads from config.debug)
+        self._rank = int(os.environ.get("RANK", 0))
+        self._data_dumper = get_data_dumper(config, rank=self._rank, key="worker")
+
+    def _get_target_param_for_dump(self) -> tuple[str, torch.Tensor] | None:
+        if self._data_dumper is None:
+            return None
+        pattern = self._data_dumper.target_param_pattern
+        if not pattern:
+            return None
+        cached = getattr(self, "_cached_target_param", None)
+        if cached is not None and cached[0] == pattern:
+            return cached[1], cached[2]
+        for name, param in self.actor_module.named_parameters():
+            if re.search(pattern, name):
+                self._cached_target_param = (pattern, name, param)
+                return name, param
+        return None
+
+    def _forward_micro_batch(
+        self,
+        micro_batch,
+        temperature,
+        *,
+        training_step: int = -1,
+        micro_idx: int = 0,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
         """
-        response_length = micro_batch["responses"].size(-1)
+        responses = micro_batch["responses"]
+        response_length = responses.size(-1)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             input_ids = micro_batch["input_ids"]
             batch_size, seqlen = input_ids.shape
@@ -196,6 +226,29 @@ class DataParallelPPOActor:
                 log_probs = logprobs_from_logits(logits, micro_batch["responses"])
                 entropy = nx_utils.entropy_from_logits(logits)  # (bsz, response_length)
 
+            # Compute response_mask for dumping
+            if "scoring_attention_mask" in micro_batch:
+                response_mask = micro_batch["scoring_attention_mask"][:, -response_length:]
+            else:
+                response_mask = micro_batch["attention_mask"][:, -response_length:]
+
+            # Dump forward data using DataDumper (config-controlled)
+            should_dump_fwd = self._data_dumper is not None and self._data_dumper.should_dump(
+                "forward_data", training_step
+            )
+            if should_dump_fwd:
+                input_ids_for_dump = (
+                    micro_batch["input_ids"] if "input_ids" in micro_batch else None
+                )
+                self._data_dumper.dump_forward_data(
+                    step=training_step,
+                    micro_idx=micro_idx,
+                    log_probs=log_probs,
+                    entropy=entropy,
+                    response_mask=response_mask,
+                    input_ids=input_ids_for_dump,
+                )
+
             return entropy, log_probs
 
     def _optimizer_step(self):
@@ -241,8 +294,11 @@ class DataParallelPPOActor:
         # temperature must be in the data.meta_info to avoid slient error
         temperature = data.meta_info["temperature"]
         use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
+        global_step = int(data.meta_info.get("global_step", -1))
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        if "scoring_attention_mask" in data.batch:
+            select_keys.append("scoring_attention_mask")
         batch = data.select(batch_keys=select_keys).batch
 
         if use_dynamic_bsz:
@@ -255,9 +311,13 @@ class DataParallelPPOActor:
             micro_batches = batch.split(micro_batch_size)
 
         log_probs_lst = []
-        for micro_batch in micro_batches:
+        for micro_idx, micro_batch in enumerate(micro_batches):
             with torch.no_grad():
-                _, log_probs = self._forward_micro_batch(micro_batch, temperature=temperature)
+                _, log_probs = self._forward_micro_batch(
+                    micro_batch,
+                    temperature=temperature,
+                    training_step=global_step,
+                )
             log_probs_lst.append(log_probs)
         log_probs = torch.concat(log_probs_lst, dim=0)
 
@@ -275,6 +335,7 @@ class DataParallelPPOActor:
 
         # temperature must be in the data.meta_info to avoid slient error
         temperature = data.meta_info["temperature"]
+        global_step = int(data.meta_info.get("global_step", -1))
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids", "advantages"]
         if "scoring_attention_mask" in data.batch:
@@ -290,6 +351,8 @@ class DataParallelPPOActor:
         dataloader = batch.split(self.config.ppo_mini_batch_size)
 
         metrics = {}
+        dumped_gradient = False
+        dumped_param = False
         for epoch in range(self.config.ppo_epochs):
             dataloader = batch.split(self.config.ppo_mini_batch_size)
             for batch_idx, mini_batch in enumerate(dataloader):
@@ -310,7 +373,12 @@ class DataParallelPPOActor:
 
                 self.actor_optimizer.zero_grad()
 
-                for micro_batch_data in micro_batches:
+                # Sum of per-microbatch (unscaled) components for logging/debugging.
+                # Note: these are NOT divided by grad accumulation or scaled by dynamic bsz.
+                pg_loss_sum_scalar = 0.0
+                entropy_loss_sum_scalar = 0.0
+
+                for micro_idx, micro_batch_data in enumerate(micro_batches):
                     micro_batch_data = micro_batch_data.cuda()
                     responses = micro_batch_data["responses"]
                     response_length = responses.size(1)
@@ -325,7 +393,10 @@ class DataParallelPPOActor:
 
                     # all return: (bsz, response_length)
                     entropy, log_prob = self._forward_micro_batch(
-                        micro_batch=micro_batch_data, temperature=temperature
+                        micro_batch=micro_batch_data,
+                        temperature=temperature,
+                        training_step=global_step,
+                        micro_idx=micro_idx,
                     )
 
                     pg_loss, loss_metrics = self.compute_policy_loss_impl(
@@ -380,8 +451,69 @@ class DataParallelPPOActor:
                     loss_data.update(loss_metrics)
                     append_to_dict(metrics, loss_data)
 
+                    # Dump gradient data once per global_step (after backward).
+                    if (
+                        not dumped_gradient
+                        and self._data_dumper is not None
+                        and self._data_dumper.should_dump("gradient", global_step)
+                    ):
+                        target_param = self._get_target_param_for_dump()
+                        if target_param is not None:
+                            param_name, param = target_param
+                            if param.grad is not None:
+                                self._data_dumper.dump_gradient(
+                                    step=global_step,
+                                    param_name=param_name,
+                                    gradient=param.grad,
+                                )
+                                dumped_gradient = True
+
+                    # Dump loss data using DataDumper (config-controlled)
+                    if self._data_dumper is not None and self._data_dumper.should_dump(
+                        "loss", global_step
+                    ):
+                        self._data_dumper.dump_loss(
+                            step=global_step,
+                            micro_idx=micro_idx,
+                            loss=policy_loss.detach().item(),
+                            pg_loss=pg_loss.detach().item(),
+                            entropy_loss=entropy_loss.detach().item(),
+                            metrics=loss_metrics,
+                            extra_info={
+                                "epoch": epoch,
+                                "batch_idx": batch_idx,
+                                "first_1000_entropy_loss": first_1000_entropy_loss.detach().item(),
+                                "last_1000_entropy_loss": last_1000_entropy_loss.detach().item(),
+                            },
+                        )
+
+                # Log the sums of pg/entropy losses across microbatches for this mini-batch.
+                append_to_dict(
+                    metrics,
+                    {
+                        "actor/pg_loss_sum": pg_loss_sum_scalar,
+                        "actor/entropy_loss_sum": entropy_loss_sum_scalar,
+                    },
+                )
+
                 grad_norm = self._optimizer_step()
                 grad_data = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, grad_data)
+
+                # Dump param data once per global_step (after optimizer step).
+                if (
+                    not dumped_param
+                    and self._data_dumper is not None
+                    and self._data_dumper.should_dump("param", global_step)
+                ):
+                    target_param = self._get_target_param_for_dump()
+                    if target_param is not None:
+                        param_name, param = target_param
+                        self._data_dumper.dump_param(
+                            step=global_step,
+                            param_name=param_name,
+                            param=param,
+                        )
+                        dumped_param = True
         self.actor_optimizer.zero_grad()
         return metrics
