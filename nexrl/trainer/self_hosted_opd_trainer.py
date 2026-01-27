@@ -67,14 +67,14 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         # because the parent class creates the train_service_client
 
         # Get student identifier from config or use default
-        self._student_identifier = config.train_service.get("identifier", "nexrl-group-1")
+        self._student_identifier = config.train_service.get("identifier", "student")
 
         # Store teacher config before super().__init__
         teacher_service_config = config.get("teacher_service")
         if teacher_service_config is None:
             raise ValueError("teacher_service configuration is required for OPD trainer")
 
-        self._teacher_identifier = teacher_service_config.get("identifier", "nexrl-group-2")
+        self._teacher_identifier = teacher_service_config.get("identifier", "teacher")
         self._teacher_url = teacher_service_config.url
         self._teacher_backend = teacher_service_config.backend
         self._teacher_init_config = teacher_service_config

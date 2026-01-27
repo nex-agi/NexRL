@@ -524,6 +524,17 @@ def compute_reverse_kl_loss(
             )
             print("########################################")
 
+    # # For optimization, we use a surrogate loss that yields the correct gradient:
+    # # grad(loss) = (1 + log_S - log_T) * grad(log_S)
+    # # We achieve this by multiplying with a "pseudo-ratio" of 1 that carries the gradient of log_S
+    # pseudo_ratio = torch.exp(student_log_probs - student_log_probs.detach())
+    # surrogate_kl = token_wise_kl * pseudo_ratio
+
+    # # Aggregate loss
+    # reverse_kl_loss = agg_loss(
+    #     loss_mat=surrogate_kl, loss_mask=response_mask, loss_agg_mode=loss_agg_mode
+    # )
+
     # Aggregate loss
     reverse_kl_loss = agg_loss(
         loss_mat=token_wise_kl, loss_mask=response_mask, loss_agg_mode=loss_agg_mode

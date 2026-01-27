@@ -343,7 +343,17 @@ class APIZMQCoordinator:
         results.sort(key=lambda x: x["rank"])
 
         # Extract DataProto results from each worker
-        result_data_protos = [r["result"] for r in results]
+        result_data_protos = []
+        for r in results:
+            res = r["result"]
+            # Handle case where result is a dict (serialization issue or unexpected return type)
+            if isinstance(res, dict):
+                logger.warning(
+                    f"[scatter_operation] Received dict instead of DataProto from rank {r.get('rank')}: {res.keys()}"
+                )
+                # Wrap dict in DataProto, assuming it contains meta_info or metrics
+                res = DataProto(meta_info=res)
+            result_data_protos.append(res)
 
         # Concatenate results from all workers
         concatenated_result = DataProto.concat(result_data_protos)
