@@ -39,20 +39,22 @@ _TOKENIZER_LOCK = threading.Lock()
 def _get_cached_tokenizer(tokenizer_path: str):
     """
     Get or create a cached tokenizer (process-local singleton).
-    
+
     This cache is shared across all clients in the same Python process:
     - Local mode: All rollout workers share one tokenizer
     - Ray mode: Each actor process has one tokenizer
-    
+
     Args:
         tokenizer_path: Path to the tokenizer
-        
+
     Returns:
         Cached tokenizer instance
     """
     with _TOKENIZER_LOCK:
         if tokenizer_path not in _TOKENIZER_CACHE:
-            logger.info(f"Loading tokenizer for path: {tokenizer_path} (first time in this process)")
+            logger.info(
+                f"Loading tokenizer for path: {tokenizer_path} (first time in this process)"
+            )
             _TOKENIZER_CACHE[tokenizer_path] = hf_tokenizer(tokenizer_path)
         else:
             logger.debug(f"Reusing cached tokenizer for path: {tokenizer_path}")
