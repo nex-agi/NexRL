@@ -56,19 +56,13 @@ defaults:
   - single_turn_math_qwen2a5_7b
   - _self_
 
-project_name: "NexRL-Weaver"
-experiment_name: "baseline-single_turn_math_qwen3_8b"
-
-resource:
-  inference:
-    served_model_name: "nexrl-rollout-qwen3-8b-math-tangtian"
-    model_path: "/gpfs/models/huggingface.co/Qwen/Qwen3-8B"
+...
 
 # Mock rollout worker 从 dump 文件加载
 rollout_worker:
   type: "mock"
   need_llm_inference: false
-  trajectory_load_path: "/gpfs/users/tangtian/Weaver/NexRL/logs/baseline-single_turn_math_qwen3_8b/20260126-075017/debug_dump/trajectory/step_000000.pt"
+  trajectory_load_path: "NexRL/logs/baseline-single_turn_math_qwen3_8b/20260126-075017/debug_dump/trajectory/step_000000.pt"
   trajectory_format: "pt"
 ```
 
