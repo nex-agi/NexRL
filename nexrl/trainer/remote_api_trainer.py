@@ -25,6 +25,7 @@ from omegaconf import DictConfig
 
 from ..nexrl_types import Trajectory
 from ..tinker.tinker_service_holder import TinkerServiceHolder
+from ..utils.data_dumper import DataDumper, get_data_dumper
 from ..utils.finetune_service_utils import convert_trajectories_to_datums
 from ..utils.logging_utils import log_rollout_metrics
 from ..weaver.weaver_service_holder import WeaverServiceHolder
@@ -78,10 +79,18 @@ class RemoteApiTrainer(BaseTrainer):
         # Step counter for weight saving
         self._step_counter = 0
 
+        # Initialize DataDumper for debug data collection
+        self._data_dumper: DataDumper = get_data_dumper(config, rank=0, key="remote_api_trainer")
+
+        # Get enable_debug_dump setting for passing to Weaver
+        debug_config = config.get("debug", {})
+        self._enable_debug_dump = debug_config.get("enable_data_dump", False)
+
         logger.info(
             f"RemoteApiTrainer initialized: loss_fn={self._loss_fn}, "
             f"lr={self._learning_rate}, beta1={self._beta1}, beta2={self._beta2}, "
-            f"weight_decay={self._weight_decay}, eps={self._eps}, grad_clip_norm={self._grad_clip_norm}"
+            f"weight_decay={self._weight_decay}, eps={self._eps}, grad_clip_norm={self._grad_clip_norm}, "
+            f"debug_dump_enabled={self._data_dumper.enabled}"
         )
 
     def set_service_holder(self, service_holder: TinkerServiceHolder | WeaverServiceHolder) -> None:
@@ -140,8 +149,25 @@ class RemoteApiTrainer(BaseTrainer):
         # Step 2: Prepare trajectories (e.g., compute advantages)
         trajectories = self._prepare_trajectories(trajectories, metrics)
 
+        # Dump prepared trajectories if enabled (DataDumper)
+        if self._data_dumper.should_dump("prepared_trajectories", self._train_step):
+            # Extract advantages from extra_fields if available
+            advantages = [t.extra_fields.get("advantages", []) for t in trajectories]
+            self._data_dumper.dump_prepared_trajectories(
+                step=self._train_step,
+                trajectories=trajectories,
+                advantages=advantages,
+            )
+
         # Step 3: Convert to service Datum format
         datums_data = convert_trajectories_to_datums(trajectories)
+
+        # Dump datums if enabled (DataDumper)
+        if self._data_dumper.should_dump("datums", self._train_step):
+            self._data_dumper.dump_datums(
+                step=self._train_step,
+                datums_data=datums_data,
+            )
 
         if len(datums_data) == 0:
             logger.warning("No valid datums after filtering, skipping training step")
@@ -153,6 +179,7 @@ class RemoteApiTrainer(BaseTrainer):
 
         loss_fn_config = {
             "entropy_coeff": self._entropy_coeff,
+            "enable_debug_dump": self._enable_debug_dump,  # Pass debug flag to Weaver
         }
 
         training_metrics = execute(
@@ -167,6 +194,13 @@ class RemoteApiTrainer(BaseTrainer):
             eps=self._eps,
             grad_clip_norm=self._grad_clip_norm,
         )
+
+        # Dump training metrics if enabled (DataDumper)
+        if self._data_dumper.should_dump("training_metrics", self._train_step):
+            self._data_dumper.dump_training_metrics(
+                step=self._train_step,
+                metrics=training_metrics,
+            )
 
         # Step 5: Save weights and update sampling client
         self._step_counter += 1
