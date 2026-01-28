@@ -122,10 +122,12 @@ class AgentRolloutWorker(BaseRolloutWorker):
 
         # Extract ground_truth - could be in task directly or in reward_model dict
         ground_truth = task["reward_model"].get("ground_truth", "")
-        model_tag = task.get(
-            "model_tag",
+        # identifier serves as model_tag for trajectory routing
+        identifier = task.get(
+            "model_tag",  # Allow task to override
             self._config.get(
-                "model_tag", self._config.inference_service.get("model_tag", "default")
+                "model_tag",  # Fallback to rollout_worker config
+                self._config.inference_service.get("identifier", "default"),  # Use identifier
             ),
         )
 
@@ -162,7 +164,7 @@ class AgentRolloutWorker(BaseRolloutWorker):
                     "task_id": task.get("task_id", 0),
                     "temperature": self._config.temperature,
                     "finish_reason": agent_result.get("finish_reason", "stop"),
-                    "model_tag": model_tag,
+                    "model_tag": identifier,  # identifier serves as model_tag for trajectory routing
                     # Logprobs field (0.0 for prompt, actual logprobs for response)
                     "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
                 },

@@ -30,6 +30,7 @@ Reference: https://thinkingmachines.ai/blog/on-policy-distillation/
 
 import logging
 import os
+import time
 from typing import Dict
 
 import numpy as np
@@ -38,6 +39,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from ..nexrl_types import Batch
 from ..train_service_client import TrainServiceClient
+from ..utils.config_utils import get_actor_train_service_config_by_name
 from ..utils.init_utils import create_train_service_client
 from .self_hosted_trainer import SelfHostedTrainer
 
@@ -63,17 +65,28 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
             config: Configuration dictionary with training settings and OPD parameters
         """
         # OPD requires explicit identifiers for multi-worker-group setup
-        # We need to set the student identifier BEFORE calling super().__init__
-        # because the parent class creates the train_service_client
+        # We need to set up both student (actor) and teacher service configs
 
-        # Get student identifier from config or use default
-        self._student_identifier = config.train_service.get("identifier", "student")
+        # Get train_service configs and service names
+        train_service = config.get("train_service")
+        actor_train_service_name = config.get("actor_train_service")
+        teacher_train_service_name = config.get("teacher_train_service")
 
-        # Store teacher config before super().__init__
-        teacher_service_config = config.get("teacher_service")
-        if teacher_service_config is None:
-            raise ValueError("teacher_service configuration is required for OPD trainer")
+        if not train_service or not actor_train_service_name:
+            raise ValueError("train_service and actor_train_service must be specified")
+        if not teacher_train_service_name:
+            raise ValueError("teacher_train_service must be specified for OPD trainer")
 
+        # Get student (actor) service config
+        student_service_config = get_actor_train_service_config_by_name(
+            train_service, actor_train_service_name
+        )
+        self._student_identifier = student_service_config.get("identifier", "student")
+
+        # Get teacher service config
+        teacher_service_config = get_actor_train_service_config_by_name(
+            train_service, teacher_train_service_name
+        )
         self._teacher_identifier = teacher_service_config.get("identifier", "teacher")
         self._teacher_url = teacher_service_config.url
         self._teacher_backend = teacher_service_config.backend
@@ -83,12 +96,7 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         # Teacher client will be created lazily on first use
         self._teacher_client: TrainServiceClient | None = None
 
-        # Now call parent __init__ - but we need to override client creation
-        # We'll do this by setting the identifier in train_service config
-        # before the parent creates the client
-        if "identifier" not in config.train_service:
-            OmegaConf.update(config, "train_service.identifier", self._student_identifier)
-
+        # Call parent __init__ - it will use actor_train_service to create the student client
         super().__init__(config)
 
         # OPD algorithm configuration
@@ -543,15 +551,14 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         Returns:
             Dictionary of training metrics
         """
-        import time
-
         logger.info("SelfHostedOpdTrainer begin")
 
         # Step 1: Process trajectories to add padding and tensor fields
         trajectories = self._process_trajectories(trajectories)
 
         # Step 2: Convert trajectories to batch
-        batch = Batch.from_trajectories(trajectories, model_tag=self._model_tag)
+        # identifier serves as model_tag for batch tracking
+        batch = Batch.from_trajectories(trajectories, model_tag=self._identifier)
         batch = batch.pad_to_world_size(world_size=self.world_size)
 
         # Step 3: Prepare batch (OPD-specific: get teacher log probs)

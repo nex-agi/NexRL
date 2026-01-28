@@ -52,7 +52,8 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         super().__init__()
         self._config = config
         self._service_holder = None  # Set by derived class
-        self._model_tag = config.inference_service.get("model_tag", "default")
+        # identifier serves as model_tag for weight sync coordination
+        self._identifier = config.inference_service.get("identifier", "default")
         self._freeze_for_weight_sync = config.inference_service.get("freeze_for_weight_sync", True)
 
     @abstractmethod

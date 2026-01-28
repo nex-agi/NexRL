@@ -28,6 +28,7 @@ from omegaconf import DictConfig
 
 from ..inference_service_client import hf_tokenizer
 from ..nexrl_types import Batch, Trajectory
+from ..utils.config_utils import get_actor_train_service_config_by_name
 from ..utils.data_dumper import get_data_dumper
 from ..utils.init_utils import create_train_service_client
 from ..utils.torch_functional import compute_position_id_with_mask, padding_data
@@ -58,15 +59,24 @@ class SelfHostedTrainer(BaseTrainer):
         """
         super().__init__(config)
 
-        # Train service client
-        self._train_service_client = create_train_service_client(
-            config.train_service.backend,
-            config.train_service.url,
-            config.train_service.get("identifier", None),
+        # Get the actor train service config
+        train_service = config.get("train_service")
+        actor_train_service_name = config.get("actor_train_service")
+        if not train_service or not actor_train_service_name:
+            raise ValueError("train_service and actor_train_service must be specified")
+        self._actor_train_service_config = get_actor_train_service_config_by_name(
+            train_service, actor_train_service_name
         )
-        self.world_size = config.train_service.get("world_size", None)
+
+        # Train service client (using actor train service)
+        self._train_service_client = create_train_service_client(
+            self._actor_train_service_config.backend,
+            self._actor_train_service_config.url,
+            self._actor_train_service_config.get("identifier", None),
+        )
+        self.world_size = self._actor_train_service_config.resource.get("world_size", None)
         if self.world_size is None:
-            raise ValueError("world_size must be specified in train_service config")
+            raise ValueError("world_size must be specified in actor train_service.resource config")
 
         # Initialize tokenizer for trajectory processing
         tokenizer_path = config.algorithm.inference_service.get(
@@ -103,15 +113,15 @@ class SelfHostedTrainer(BaseTrainer):
         Initialize the train service backend workers.
         This should be called before starting training.
         """
-        backend = self._config.train_service.backend
+        backend = self._actor_train_service_config.backend
 
         if backend in ("nextrainer", "http"):
             logger.info("Initializing self-hosted workers with final config...")
             try:
                 from omegaconf import OmegaConf
 
-                train_service_config = self._config.train_service
-                config_dict = OmegaConf.to_container(train_service_config, resolve=True)
+                # Use the actor train service config
+                config_dict = OmegaConf.to_container(self._actor_train_service_config, resolve=True)
 
                 # Merge debug config into actor config for DataDumper initialization
                 # NOTE: self._config is a sub-config (config.trainer), so we need to check
@@ -217,7 +227,8 @@ class SelfHostedTrainer(BaseTrainer):
         trajectories = self._process_trajectories(trajectories)
 
         # Step 2: Convert trajectories to batch
-        batch = Batch.from_trajectories(trajectories, model_tag=self._model_tag)
+        # identifier serves as model_tag for batch tracking
+        batch = Batch.from_trajectories(trajectories, model_tag=self._identifier)
         batch = batch.pad_to_world_size(world_size=self.world_size)
 
         # Step 3: Prepare batch (algorithm-specific)

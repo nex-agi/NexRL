@@ -98,7 +98,7 @@ data:
   max_response_length: 8192
 
   # tokenizer_path: Path to tokenizer (HuggingFace format)
-  tokenizer_path: ${resource.inference.model_path}
+  tokenizer_path: ${service.inference_service.model_path}
 
   # shuffle: Randomly shuffle data order each epoch
   shuffle: true
@@ -120,7 +120,8 @@ rollout_worker:
   type: "agent"
 
   # model_tag: Route rollouts to the correct trajectory pool
-  model_tag: ${service.inference_service.model_tag}
+  # identifier serves as model_tag for weight sync coordination
+  model_tag: ${service.inference_service.identifier}
 
   # num_workers: Number of parallel rollout workers
   # Increase for higher throughput (requires more resources)
@@ -153,6 +154,11 @@ rollout_worker:
     # Single-turn math agent settings
     math:
       judge_mode: "rule"  # "rule" or "llm" for math reward calculation
+
+  # Resource configuration for agent workers (for Kubernetes deployment)
+  resource:
+    num_workers: 0          # Number of CPU agent worker pods
+    agents_per_worker: 32   # Agents per worker pod
 
   # max_prompt_length: Maximum tokens in input prompt
   max_prompt_length: ${data.max_prompt_length}
@@ -302,7 +308,7 @@ validate:
   validate_before_train: false
 
   # max_response_length: Maximum response length for validation
-  max_response_length: 8192
+  max_response_length: 16384
 
   # data: Validation dataset configuration (similar to training data)
   data:
@@ -338,8 +344,8 @@ service:
   #----------------------------------------
   # This is the student model for generating rollouts
   inference_service:
-    # model_tag: Identifier for multi-model training
-    model_tag: "student"
+    # identifier: Unique identifier for this inference service (also used as model_tag)
+    identifier: "student"
 
     # api_key: Authentication key for inference API
     api_key: "EMPTY"
@@ -348,13 +354,16 @@ service:
     base_url: http://${oc.env:INFERENCE_BASE_URL}
 
     # model: Model identifier or name
-    model: ${resource.inference.served_model_name}
+    model: "nexrl-rollout-qwen2a5-1p5b-opd"
+
+    # model_path: Path to model weights
+    model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-1.5B-Instruct"
 
     # max_tokens: Maximum tokens to generate per request
     max_tokens: ${data.max_response_length}
 
     # tokenizer: Tokenizer configuration
-    tokenizer: ${data.tokenizer_path}
+    tokenizer: ${service.inference_service.model_path}
 
     # backend: Inference backend
     backend: sglang
@@ -368,6 +377,13 @@ service:
     # weight_type: Format for weight files
     weight_type: "sglang_nckpt"
 
+    # Resource configuration for inference (for Kubernetes deployment)
+    resource:
+      backend: bp-sglang
+      replicas: 4
+      gpus_per_replica: 2
+      extra_args: ""
+
   #----------------------------------------
   # Tinker Service (Optional - only for Tinker backend)
   #----------------------------------------
@@ -376,201 +392,223 @@ service:
     lora_rank: 32
     api_key: ""
 
+  # actor_train_service: Name of the main actor training service
+  # This specifies which train service handles the primary model training (student for OPD)
+  actor_train_service: "student"
+
+  # teacher_train_service: Name of the teacher training service (for OPD)
+  teacher_train_service: "teacher"
+
   #----------------------------------------
-  # Student Training Service
+  # Training Services
   #----------------------------------------
+  # Each service group is a complete self-contained training configuration
   train_service:
-    # identifier: Worker group identifier for student (must match resource.train key)
-    identifier: "student"
+    #----------------------------------------
+    # Student Training Service
+    #----------------------------------------
+    student:
+      # identifier: Unique identifier for this training service (also used as model_tag)
+      identifier: "student"
 
-    # model_tag: Identifier for multi-model training
-    model_tag: "student"
+      # backend: Training backend
+      backend: http
 
-    # backend: Training backend
-    backend: http
-    world_size: 8
+      # url: Training service URL (if using remote training service)
+      url: "http://${oc.env:API_SERVER_URL}:8000"
 
-    # url: Training service URL (if using remote training service)
-    url: "http://${oc.env:API_SERVER_URL}:8000"
+      # Resource configuration (for Kubernetes deployment)
+      resource:
+        world_size: 1          # Number of GPU pods for student
+        gpus_per_pod: 8        # GPUs per pod
+        memory_per_gpu: 200    # GPU memory in GB
 
-    # actor: Actor model configuration (student policy being trained)
-    actor:
-      # checkpoint_manager: Checkpoint format
-      checkpoint_manager: dcp
+      # actor: Actor model configuration (student policy being trained)
+      actor:
+        # checkpoint_manager: Checkpoint format
+        checkpoint_manager: dcp
 
-      # model: Student model settings
-      model:
-        path: "${resource.inference.model_path}"
-        use_remove_padding: true
+        # model: Student model settings
+        model:
+          path: "${service.inference_service.model_path}"
+          use_remove_padding: true
 
-      # Distillation Training Hyperparameters
-      ppo_mini_batch_size: ${data.batch_size}
-      ppo_micro_batch_size: 4
-      grad_clip: 1.0
+        # Distillation Training Hyperparameters
+        ppo_mini_batch_size: ${data.batch_size}
+        ppo_micro_batch_size: 4
+        grad_clip: 1.0
 
-      # Clipping ratios (not used in distillation, but required by actor)
-      clip_ratio: 0.2
-      clip_ratio_low: 0.2
-      clip_ratio_high: 0.2
-      clip_ratio_c: 3.0
+        # Clipping ratios (not used in distillation, but required by actor)
+        clip_ratio: 0.2
+        clip_ratio_low: 0.2
+        clip_ratio_high: 0.2
+        clip_ratio_c: 3.0
 
-      use_distillation_clipping: ${trainer.use_distillation_clipping}
-      distillation_cliprange: ${trainer.distillation_cliprange}
-      distillation_cliprange_low: ${trainer.distillation_cliprange_low}
-      distillation_cliprange_high: ${trainer.distillation_cliprange_high}
-      do_old_student_log_prob_compute: ${trainer.do_old_student_log_prob_compute}
-      train_token_start_pct: ${trainer.train_token_start_pct}
-      train_token_end_pct: ${trainer.train_token_end_pct}
-      advantage_start_pct: ${trainer.advantage_start_pct}
-      advantage_end_pct: ${trainer.advantage_end_pct}
+        use_distillation_clipping: ${trainer.use_distillation_clipping}
+        distillation_cliprange: ${trainer.distillation_cliprange}
+        distillation_cliprange_low: ${trainer.distillation_cliprange_low}
+        distillation_cliprange_high: ${trainer.distillation_cliprange_high}
+        do_old_student_log_prob_compute: ${trainer.do_old_student_log_prob_compute}
+        train_token_start_pct: ${trainer.train_token_start_pct}
+        train_token_end_pct: ${trainer.train_token_end_pct}
+        advantage_start_pct: ${trainer.advantage_start_pct}
+        advantage_end_pct: ${trainer.advantage_end_pct}
 
-      loss_agg_mode: token-mean
-      loss_func_type: NX_20250515
-      entropy_coeff: ${trainer.algorithm.entropy_coeff}
+        loss_agg_mode: token-mean
+        loss_func_type: NX_20250515
+        entropy_coeff: ${trainer.algorithm.entropy_coeff}
 
-      # KL divergence loss settings (not used in distillation)
-      use_kl_loss: false
-      kl_loss_type: low_var_kl
-      kl_loss_coef: 0.0
+        # KL divergence loss settings (not used in distillation)
+        use_kl_loss: false
+        kl_loss_type: low_var_kl
+        kl_loss_coef: 0.0
 
-      # Parallelism settings
-      use_ring_sequence_parallel: false
-      ppo_epochs: ${trainer.algorithm.distillation_epochs}
-      ulysses_sequence_parallel_size: 2
-
-      # Dynamic batch sizing
-      use_dynamic_bsz: false
-      ppo_max_token_len_per_gpu: 16384
-
-      do_old_log_prob_compute: false
-
-      # Optimizer configuration
-      optim:
-        lr: 1e-6
-        lr_warmup_steps_ratio: 0.0
-        warmup_style: constant
-
-      # FSDP configuration
-      fsdp_config:
-        wrap_policy:
-          min_num_params: 0
-        param_offload: false
-        grad_offload: false
-        optimizer_offload: false
-        fsdp_size: -1
-
-      # Reference model configuration (not needed for distillation)
-      ref:
-        fsdp_config:
-          param_offload: true
-          wrap_policy:
-            min_num_params: 0
-        log_prob_micro_batch_size: 4
+        # Parallelism settings
+        use_ring_sequence_parallel: false
+        ppo_epochs: ${trainer.algorithm.distillation_epochs}
         ulysses_sequence_parallel_size: 2
 
-      # Rollout configuration
-      rollout:
-        rollout_standalone: true
-        temperature: ${rollout_worker.temperature}
-        use_distillation_clipping: ${trainer.algorithm.use_distillation_clipping}
-        distillation_cliprange: ${trainer.algorithm.distillation_cliprange}
-        distillation_cliprange_low: ${trainer.algorithm.distillation_cliprange_low}
-        distillation_cliprange_high: ${trainer.algorithm.distillation_cliprange_high}
-        do_old_student_log_prob_compute: ${trainer.algorithm.do_old_student_log_prob_compute}
-        train_token_start_pct: ${trainer.algorithm.train_token_start_pct}
-        train_token_end_pct: ${trainer.algorithm.train_token_end_pct}
-        advantage_start_pct: ${trainer.algorithm.advantage_start_pct}
-        advantage_end_pct: ${trainer.algorithm.advantage_end_pct}
-        dtype: bfloat16
-        tensor_model_parallel_size: 2
-        log_prob_micro_batch_size: 4
-        n: ${data.rollout_repeat_n}
-        use_weight_provider: true
+        # Dynamic batch sizing
+        use_dynamic_bsz: false
+        ppo_max_token_len_per_gpu: 16384
 
-  #----------------------------------------
-  # Teacher Training Service
-  #----------------------------------------
-  # Teacher model for computing log probabilities (used by OPD trainer)
-  teacher_service:
-    # identifier: Worker group identifier for teacher (must match resource.train key)
-    identifier: "teacher"
-    model_tag: "teacher"
+        do_old_log_prob_compute: false
 
-    # backend: Training backend
-    backend: http
+        # Optimizer configuration
+        optim:
+          lr: 1e-6
+          lr_warmup_steps_ratio: 0.0
+          warmup_style: constant
 
-    # url: Training service URL
-    url: "http://${oc.env:API_SERVER_URL}:8000"
-
-    # actor: Teacher model configuration
-    actor:
-      # checkpoint_manager: Checkpoint format
-      checkpoint_manager: dcp
-
-      # model: Teacher model settings
-      model:
-        path: ${resource.teacher.model_path}
-        use_remove_padding: true
-
-      # Teacher Hyperparameters
-      ppo_mini_batch_size: ${data.batch_size}
-      ppo_micro_batch_size: 8
-      grad_clip: 1.0
-
-      clip_ratio: 0.2
-      clip_ratio_low: 0.2
-      clip_ratio_high: 0.2
-      clip_ratio_c: 3.0
-
-      loss_agg_mode: token-mean
-      loss_func_type: NX_20250515
-      entropy_coeff: ${trainer.algorithm.entropy_coeff}
-
-      use_kl_loss: false
-      kl_loss_type: low_var_kl
-      kl_loss_coef: 0.0
-
-      # Parallelism settings (larger for bigger model)
-      use_ring_sequence_parallel: false
-      ulysses_sequence_parallel_size: 4
-
-      use_dynamic_bsz: false
-      ppo_max_token_len_per_gpu: 16384
-      do_old_log_prob_compute: false
-
-      # Optimizer configuration (not used for teacher, but required)
-      optim:
-        lr: 1.0e-4
-        lr_warmup_steps_ratio: 0.0
-        warmup_style: constant
-
-      # FSDP configuration
-      fsdp_config:
-        wrap_policy:
-          min_num_params: 0
-        param_offload: false
-        grad_offload: false
-        optimizer_offload: false
-        fsdp_size: -1
-
-      # Reference model configuration
-      ref:
+        # FSDP configuration
         fsdp_config:
-          param_offload: true
           wrap_policy:
             min_num_params: 0
-        log_prob_micro_batch_size: 32
-        ulysses_sequence_parallel_size: 4
+          param_offload: false
+          grad_offload: false
+          optimizer_offload: false
+          fsdp_size: -1
 
-      # Rollout configuration
-      rollout:
-        rollout_standalone: true
-        temperature: ${rollout_worker.temperature}
-        dtype: bfloat16
-        tensor_model_parallel_size: 2
-        log_prob_micro_batch_size: 32
-        n: ${data.rollout_repeat_n}
-        use_weight_provider: true
+        # Reference model configuration (not needed for distillation)
+        ref:
+          fsdp_config:
+            param_offload: true
+            wrap_policy:
+              min_num_params: 0
+          log_prob_micro_batch_size: 4
+          ulysses_sequence_parallel_size: 2
+
+        # Rollout configuration
+        rollout:
+          rollout_standalone: true
+          temperature: ${rollout_worker.temperature}
+          use_distillation_clipping: ${trainer.algorithm.use_distillation_clipping}
+          distillation_cliprange: ${trainer.algorithm.distillation_cliprange}
+          distillation_cliprange_low: ${trainer.algorithm.distillation_cliprange_low}
+          distillation_cliprange_high: ${trainer.algorithm.distillation_cliprange_high}
+          do_old_student_log_prob_compute: ${trainer.algorithm.do_old_student_log_prob_compute}
+          train_token_start_pct: ${trainer.algorithm.train_token_start_pct}
+          train_token_end_pct: ${trainer.algorithm.train_token_end_pct}
+          advantage_start_pct: ${trainer.algorithm.advantage_start_pct}
+          advantage_end_pct: ${trainer.algorithm.advantage_end_pct}
+          dtype: bfloat16
+          tensor_model_parallel_size: 2
+          log_prob_micro_batch_size: 4
+          n: ${data.rollout_repeat_n}
+          use_weight_provider: true
+
+    #----------------------------------------
+    # Teacher Training Service
+    #----------------------------------------
+    # Teacher model for computing log probabilities (used by OPD trainer)
+    teacher:
+      # identifier: Unique identifier for this training service (also used as model_tag)
+      identifier: "teacher"
+
+      # model_path: Path to teacher model weights
+      model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-7B-Instruct"
+
+      # backend: Training backend
+      backend: http
+
+      # url: Training service URL
+      url: "http://${oc.env:API_SERVER_URL}:8000"
+
+      # Resource configuration (for Kubernetes deployment)
+      resource:
+        world_size: 1          # Number of GPU pods for teacher
+        gpus_per_pod: 8        # GPUs per pod
+        memory_per_gpu: 200    # GPU memory in GB
+
+      # actor: Teacher model configuration
+      actor:
+        # checkpoint_manager: Checkpoint format
+        checkpoint_manager: dcp
+
+        # model: Teacher model settings
+        model:
+          path: ${service.train_service.teacher.model_path}
+          use_remove_padding: true
+
+        # Teacher Hyperparameters
+        ppo_mini_batch_size: ${data.batch_size}
+        ppo_micro_batch_size: 8
+        grad_clip: 1.0
+
+        clip_ratio: 0.2
+        clip_ratio_low: 0.2
+        clip_ratio_high: 0.2
+        clip_ratio_c: 3.0
+
+        loss_agg_mode: token-mean
+        loss_func_type: NX_20250515
+        entropy_coeff: ${trainer.algorithm.entropy_coeff}
+
+        use_kl_loss: false
+        kl_loss_type: low_var_kl
+        kl_loss_coef: 0.0
+
+        # Parallelism settings (larger for bigger model)
+        use_ring_sequence_parallel: false
+        ulysses_sequence_parallel_size: 2
+
+        use_dynamic_bsz: false
+        ppo_max_token_len_per_gpu: 16384
+        do_old_log_prob_compute: false
+
+        # Optimizer configuration (not used for teacher, but required)
+        optim:
+          lr: 1.0e-4
+          lr_warmup_steps_ratio: 0.0
+          warmup_style: constant
+
+        # FSDP configuration
+        fsdp_config:
+          wrap_policy:
+            min_num_params: 0
+          param_offload: false
+          grad_offload: false
+          optimizer_offload: false
+          fsdp_size: -1
+
+        # Reference model configuration
+        ref:
+          fsdp_config:
+            param_offload: true
+            wrap_policy:
+              min_num_params: 0
+          log_prob_micro_batch_size: 32
+          ulysses_sequence_parallel_size: 2
+
+        # Rollout configuration
+        rollout:
+          rollout_standalone: true
+          temperature: ${rollout_worker.temperature}
+          dtype: bfloat16
+          tensor_model_parallel_size: 2
+          log_prob_micro_batch_size: 32
+          n: ${data.rollout_repeat_n}
+          use_weight_provider: true
 
 #==========================================
 # RUNTIME MONITORING CONFIGURATION
@@ -587,44 +625,3 @@ runtime_monitor:
     enabled: true
     check_interval: 10.0
     timeout: 5.0
-
-# ============================================================================
-# Compute Resource Configuration (for Kubernetes deployment)
-# ============================================================================
-resource:
-  #----------------------------------------
-  # Training Resources (Student and Teacher)
-  #----------------------------------------
-  train:
-    # Student training resources
-    student:
-      world_size: 1          # Number of GPU pods for student
-      gpus_per_pod: 8        # GPUs per pod
-      memory_per_gpu: 200    # GPU memory in GB
-
-    # Teacher compute resources
-    teacher:
-      world_size: 1          # Number of GPU pods for teacher
-      gpus_per_pod: 8        # GPUs per pod
-      memory_per_gpu: 200    # GPU memory in GB
-
-  #----------------------------------------
-  # Student Inference Resources (for rollout)
-  #----------------------------------------
-  inference:
-    backend: bp-sglang
-    replicas: 4
-    gpus_per_replica: 2
-    served_model_name: "nexrl-rollout-qwen2a5-1p5b-opd"
-    model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-1.5B-Instruct"
-    extra_args: ""
-
-  #----------------------------------------
-  # Teacher Model Path
-  #----------------------------------------
-  teacher:
-    model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-7B-Instruct"
-
-  agent:
-    num_workers: 0          # Number of CPU agent worker pods
-    agents_per_worker: 32   # Agents per worker pod

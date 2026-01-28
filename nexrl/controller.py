@@ -46,7 +46,12 @@ from .trainer.remote_api_grpo_trainer import RemoteApiGrpoTrainer
 from .trainer.self_hosted_grpo_trainer import SelfHostedGrpoTrainer
 from .trainer.self_hosted_opd_trainer import SelfHostedOpdTrainer
 from .trajectory_pool import TrajectoryPool
-from .utils.config_utils import insert_config, use_tinker, use_weaver
+from .utils.config_utils import (
+    get_actor_train_service_config,
+    insert_config,
+    use_tinker,
+    use_weaver,
+)
 from .utils.init_utils import create_train_service_client
 from .utils.logging_utils import set_logging_basic_config
 from .validator import Validator
@@ -139,7 +144,8 @@ class NexRLController:
         self._load_initial_checkpoint()
 
         if self._config.validate.validate_before_train:
-            self._start_validate(self._config.service.inference_service.model_tag)
+            # identifier serves as model_tag for weight sync coordination
+            self._start_validate(self._config.service.inference_service.identifier)
 
         # Start all components
         execute(self.trainer.run)
@@ -150,7 +156,8 @@ class NexRLController:
         execute(self.activity_tracker.start_progress_monitor)
 
         if self._config.validate.validate_before_train:
-            self._end_validate(self._config.service.inference_service.model_tag)
+            # identifier serves as model_tag for weight sync coordination
+            self._end_validate(self._config.service.inference_service.identifier)
 
         # Main monitoring loop
         runtime_config = self._config.get("runtime_monitor", {})
@@ -164,10 +171,10 @@ class NexRLController:
 
         while True:
             # Check if weight sync is waiting for validation
-
-            model_tag = self._config.service.inference_service.model_tag
+            # identifier serves as model_tag for weight sync coordination
+            identifier = self._config.service.inference_service.identifier
             if execute(self.weight_sync_controller.is_waiting_for_validation):
-                self._run_validate(model_tag)
+                self._run_validate(identifier)
 
             if self._check_finish():
                 self.activity_tracker.experiment_logger_post(
@@ -247,13 +254,16 @@ class NexRLController:
         if self.use_tinker or self.use_weaver:
             return
 
-        # Create train service client
+        # Get the actor (main) train service config
+        actor_train_service = get_actor_train_service_config(self._config)
+
+        # Create train service client for the actor (main) train service
         self._train_service_client = create_train_service_client(
-            self._config.service.train_service.backend,
-            self._config.service.train_service.url,
-            self._config.service.train_service.get("identifier", None),
+            actor_train_service.backend,
+            actor_train_service.url,
+            actor_train_service.get("identifier", None),
             tinker_service_holder=getattr(self, "_tinker_service_holder", None),
-            config=self._config.service.train_service.get("config", {}),
+            config=actor_train_service.get("config", {}),
         )
 
         if self._config.resume.mode != "disable":
@@ -268,7 +278,7 @@ class NexRLController:
         )
         execute(
             self.weight_sync_controller.sync_weight_to_rollout_service,
-            self._config.service.train_service.model_tag,
+            actor_train_service.identifier,
         )
 
     def _load_resume_checkpoint(self):
@@ -721,7 +731,9 @@ class NexRLController:
 
     def _init_rollout_worker_inference_clients(self):
         """Initialize inference service clients for all rollout workers"""
-        backend = self._config.service.train_service.backend
+        # Get backend from actor train service
+        actor_train_service = get_actor_train_service_config(self._config)
+        backend = actor_train_service.backend
         for worker in self.rollout_workers:
             if backend == "tinker":
                 execute(worker.init_inference_service_client, self._tinker_service_holder)
@@ -776,15 +788,25 @@ class NexRLController:
             insert_config(
                 self._config.trainer.algorithm, "train_service", self._config.service.train_service
             )
+            insert_config(
+                self._config.trainer.algorithm,
+                "actor_train_service",
+                self._config.service.actor_train_service,
+            )
         insert_config(self._config.trainer, "_config_file_path", config_file_path)
 
-        # Add train_service config directly to trainer
+        # Add train_service and actor_train_service config directly to trainer
         insert_config(self._config.trainer, "train_service", self._config.service.train_service)
+        insert_config(
+            self._config.trainer, "actor_train_service", self._config.service.actor_train_service
+        )
 
-        # Add teacher_service config to trainer if exists (for OPD)
-        if self._config.service.get("teacher_service", None) is not None:
+        # Add teacher_train_service config to trainer if exists (for OPD)
+        if self._config.service.get("teacher_train_service", None) is not None:
             insert_config(
-                self._config.trainer, "teacher_service", self._config.service.teacher_service
+                self._config.trainer,
+                "teacher_train_service",
+                self._config.service.teacher_train_service,
             )
 
         if launch_mode == "ray":
@@ -1025,7 +1047,7 @@ class NexRLController:
         # Report error if tinker_api_key is not provided in either environment or config
         if not tinker_api_key:
             error_msg = (
-                "WEAVER_API_KEY is required but not found in environment variables or config"
+                "TINKER_API_KEY is required but not found in environment variables or config"
             )
             logger.error(error_msg)
             raise ValueError(error_msg)

@@ -58,6 +58,61 @@ def insert_config(
             OmegaConf.set_struct(target, original_struct)
 
 
+def get_actor_train_service_config_by_name(
+    train_service: DictConfig, actor_train_service_name: str
+) -> DictConfig:
+    """
+    Get the actor (main) train service configuration by name.
+
+    Args:
+        train_service: The train_service configuration dict
+        actor_train_service_name: The name of the actor train service (e.g., "student")
+
+    Returns:
+        The actor train service config
+
+    Raises:
+        ValueError: If actor train service is not found
+    """
+    if not actor_train_service_name:
+        raise ValueError("actor_train_service_name must be specified")
+
+    # Validate that the actor service exists
+    if actor_train_service_name not in train_service:
+        # Note: With OmegaConf, nested configs are DictConfig objects, not regular dicts
+        available_services = [
+            k for k in train_service.keys() if isinstance(train_service[k], (dict, DictConfig))
+        ]
+        raise ValueError(
+            f"Actor train service '{actor_train_service_name}' not found in train_service. "
+            f"Available services: {available_services}"
+        )
+
+    return train_service[actor_train_service_name]
+
+
+def get_actor_train_service_config(config: DictConfig) -> DictConfig:
+    """
+    Get the actor (main) train service configuration from full config.
+
+    Args:
+        config: The full configuration with service.actor_train_service and service.train_service
+
+    Returns:
+        The actor train service config
+
+    Raises:
+        ValueError: If actor train service is not specified or not found
+    """
+    actor_train_service_name = config.service.get("actor_train_service")
+    if not actor_train_service_name:
+        raise ValueError("service.actor_train_service must be specified")
+
+    return get_actor_train_service_config_by_name(
+        config.service.train_service, actor_train_service_name
+    )
+
+
 def use_tinker(config: DictConfig) -> bool:
     """
     Check if Tinker is used in the configuration.
@@ -68,11 +123,13 @@ def use_tinker(config: DictConfig) -> bool:
     Returns:
         True if Tinker is used, False otherwise
     """
-    return config.service.train_service.backend == "tinker"
+    actor_train_service = get_actor_train_service_config(config)
+    return actor_train_service.backend == "tinker"
 
 
 def use_weaver(config: DictConfig) -> bool:
     """
     Check if Weaver is used in the configuration.
     """
-    return config.service.train_service.backend == "weaver"
+    actor_train_service = get_actor_train_service_config(config)
+    return actor_train_service.backend == "weaver"

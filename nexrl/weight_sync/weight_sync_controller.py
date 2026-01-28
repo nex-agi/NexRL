@@ -84,9 +84,11 @@ class WeightSyncController(NexRLModule):
         self._waiting_for_validation = False
 
         # Initialize rollout service with inference service config if available
+        # Note: Currently only supports a single inference service
         self._inference_service_config = config.get("inference_service", {})
-        model_tag = self._inference_service_config.model_tag
-        self._rollout_services[model_tag] = RolloutServiceState(
+        # identifier serves as model_tag for weight sync coordination
+        self._identifier = self._inference_service_config.get("identifier", "default")
+        self._rollout_services[self._identifier] = RolloutServiceState(
             model_name=self._inference_service_config.model,
             weight_type=self._inference_service_config.weight_type,
             weight_path=self._config.get("sync_weight_path", ""),

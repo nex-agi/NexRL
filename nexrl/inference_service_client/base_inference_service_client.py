@@ -86,7 +86,8 @@ class InferenceServiceClient(ABC):
     def __init__(self):
         """Initialize common attributes for weight synchronization."""
         self._weight_sync_controller = None
-        self._model_tag: str = "default"
+        # identifier serves as model_tag for weight sync coordination
+        self._identifier: str = "default"
         self._freeze_for_weight_sync: bool = True
 
     @abstractmethod
@@ -160,7 +161,7 @@ class InferenceServiceClient(ABC):
 
         while total_waited < max_wait_seconds:
             status = execute(
-                self._weight_sync_controller.check_rollout_service_status, self._model_tag
+                self._weight_sync_controller.check_rollout_service_status, self._identifier
             )
 
             if status == "continue":
