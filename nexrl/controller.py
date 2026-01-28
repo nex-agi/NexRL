@@ -145,6 +145,9 @@ class NexRLController:
         for worker in self.rollout_workers:
             execute(worker.run)
 
+        # Start progress monitor (integrated in activity tracker)
+        execute(self.activity_tracker.start_progress_monitor)
+
         if self._config.validate.validate_before_train:
             self._end_validate(self._config.service.inference_service.model_tag)
 
@@ -214,6 +217,9 @@ class NexRLController:
     def _stop(self):
         """Stop all components gracefully"""
         logger.info("Stopping NexRL training process...")
+
+        # Stop progress monitor first
+        execute(self.activity_tracker.stop_progress_monitor)
 
         # Signal all workers to stop gracefully
         execute(self.trainer.stop)

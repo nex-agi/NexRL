@@ -396,6 +396,20 @@ class TrajectoryPoolInstance:
         self._weight_sync_controller = weight_sync_controller
         self._activity_tracker = activity_tracker
 
+    def get_progress_info(self) -> dict[str, Any]:
+        """
+        Get progress information for this trajectory pool instance.
+
+        Returns:
+            dict with keys:
+                - finished_trajectories: Number of trajectories in finished_samples
+        """
+        with self._lock:
+            finished_count = len(self._store._finished_samples)  # pylint: disable=protected-access
+            return {
+                "finished_trajectories": finished_count,
+            }
+
 
 class TrajectoryPool(NexRLModule):
     """
@@ -512,3 +526,26 @@ class TrajectoryPool(NexRLModule):
         """Set reference to weight manager for coordination"""
         self._dataloader = dataloader
         self._weight_sync_controller = weight_sync_controller
+
+    def get_progress_info(self) -> dict[str, Any]:
+        """
+        Get aggregated progress information across all trajectory pool instances.
+
+        Returns:
+            dict with keys:
+                - finished_trajectories: Total trajectories in finished_samples across all instances
+                - instances: Dict mapping model_tag to per-instance progress info
+        """
+        with self._lock:
+            total_finished = 0
+            instances_info = {}
+
+            for model_tag, instance in self._instances.items():
+                instance_info = instance.get_progress_info()
+                instances_info[model_tag] = instance_info
+                total_finished += instance_info["finished_trajectories"]
+
+            return {
+                "finished_trajectories": total_finished,
+                "instances": instances_info,
+            }

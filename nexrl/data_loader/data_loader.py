@@ -332,6 +332,29 @@ class SequentialDataLoader(BaseDataLoader, ABC):
         logger.info(f"SequentialDataLoader: Fetched new batch of {len(new_batch)} items")
         return True
 
+    def get_progress_info(self) -> dict[str, Any]:
+        """
+        Get progress information for the current batch.
+
+        Returns:
+            dict with keys:
+                - batch_size: Total size of current batch
+                - batch_remaining: Number of items remaining in current batch
+                - batch_processed: Number of items processed from current batch
+                - total_processed: Total number of items processed so far
+        """
+        with self._lock:
+            batch_size = len(self._data_buffer)
+            batch_processed = self._buffer_index
+            batch_remaining = batch_size - batch_processed
+
+            return {
+                "batch_size": batch_size,
+                "batch_remaining": batch_remaining,
+                "batch_processed": batch_processed,
+                "total_processed": self._data_index,
+            }
+
     @abstractmethod
     def _fetch_batch_data(self) -> list[dict[str, Any]]:
         """

@@ -58,6 +58,18 @@ class ActivityTracker:
             config=OmegaConf.to_container(config, resolve=True),
         )
 
+        # Rollout progress monitoring (nested under runtime_monitor)
+        runtime_monitor_config = config.get("runtime_monitor", {})
+        progress_config = runtime_monitor_config.get("rollout_progress_monitor", {})
+        self._progress_enabled = progress_config.get("enabled", True)
+        self._progress_update_interval = progress_config.get("update_interval", 1.0)
+        self._progress_log_interval = progress_config.get("log_interval", 10)
+        self._progress_use_tqdm = progress_config.get("use_tqdm", True)
+        self._progress_thread: threading.Thread | None = None
+        self._progress_stop_event = threading.Event()
+        self._progress_update_count = 0
+        self._progress_last_metrics: dict[str, Any] | None = None
+
     def start(self, module: str, work: str) -> str:  # pylint: disable=unused-argument
         token = str(uuid.uuid4())
         with self._cv:
@@ -291,6 +303,204 @@ class ActivityTracker:
         else:
             raise ValueError(f"Unsupported backend: {backend}")
 
+    # -- progress monitoring --
+    def get_progress_metrics(self) -> dict[str, Any]:
+        """
+        Collect progress metrics from all modules for progress monitoring.
+        Uses _module_refs to find DataLoader, TrajectoryPool, and WeightSyncController.
+
+        Returns:
+            dict with keys:
+                - active_rollout_workers: Number of rollout workers currently active
+                - dataloader: Progress info from dataloader (if available)
+                - trajectory_pool: Progress info from trajectory pool (if available)
+                - sync_mode: Current weight sync mode
+        """
+        from .executor import execute
+
+        metrics: dict[str, Any] = {}
+
+        # Get active rollout worker count
+        with self._cv:
+            active_workers = sum(
+                self._by_module.get(module_name, 0) for module_name in self._rollout_worker_modules
+            )
+            metrics["active_rollout_workers"] = active_workers
+
+        # Find singleton modules from _module_refs (they are registered with "-0" suffix)
+        # The value in _module_refs is the ret list, which contains the actual module as the only element
+        # Module names use lowercase with underscores (from role enum values)
+        dataloader_list = self._module_refs.get("data_loader-0")
+        trajectory_pool_list = self._module_refs.get("trajectory_pool-0")
+        weight_sync_controller_list = self._module_refs.get("weight_sync_controller-0")
+
+        # Extract the actual module (first element of the list)
+        dataloader = dataloader_list[0] if dataloader_list and len(dataloader_list) > 0 else None
+        trajectory_pool = (
+            trajectory_pool_list[0]
+            if trajectory_pool_list and len(trajectory_pool_list) > 0
+            else None
+        )
+        weight_sync_controller = (
+            weight_sync_controller_list[0]
+            if weight_sync_controller_list and len(weight_sync_controller_list) > 0
+            else None
+        )
+
+        # Get dataloader progress (if available)
+        if dataloader is not None:
+            try:
+                dataloader_info = execute(dataloader.get_progress_info)
+                metrics["dataloader"] = dataloader_info
+            except Exception as e:
+                logger.warning(f"Could not get dataloader progress: {e}", exc_info=True)
+                metrics["dataloader"] = None
+        else:
+            logger.debug("DataLoader not found in module registry")
+            metrics["dataloader"] = None
+
+        # Get trajectory pool progress (if available)
+        if trajectory_pool is not None:
+            try:
+                pool_info = execute(trajectory_pool.get_progress_info)
+                metrics["trajectory_pool"] = pool_info
+            except Exception as e:
+                logger.warning(f"Could not get trajectory pool progress: {e}", exc_info=True)
+                metrics["trajectory_pool"] = None
+        else:
+            logger.debug("TrajectoryPool not found in module registry")
+            metrics["trajectory_pool"] = None
+
+        # Get sync mode (if available)
+        if weight_sync_controller is not None:
+            try:
+                sync_mode = execute(
+                    lambda: weight_sync_controller._sync_mode  # pylint: disable=protected-access
+                )
+                metrics["sync_mode"] = sync_mode
+            except Exception as e:
+                logger.warning(f"Could not get sync mode: {e}", exc_info=True)
+                metrics["sync_mode"] = None
+        else:
+            logger.debug("WeightSyncController not found in module registry")
+            metrics["sync_mode"] = None
+
+        return metrics
+
+    def start_progress_monitor(self) -> None:
+        """Start the rollout progress monitoring thread"""
+        if not self._progress_enabled:
+            logger.info("Rollout progress monitoring is disabled")
+            return
+
+        if self._progress_thread is not None and self._progress_thread.is_alive():
+            logger.warning("Rollout progress monitor already running")
+            return
+
+        # Log available modules for debugging
+        with self._cv:
+            available_modules = list(self._module_refs.keys())
+            logger.info(
+                f"Starting rollout progress monitor. Available modules: {available_modules}"
+            )
+
+        self._progress_stop_event.clear()
+        self._progress_thread = threading.Thread(
+            target=self._progress_monitor_loop, daemon=True, name="RolloutProgressMonitor"
+        )
+        self._progress_thread.start()
+        logger.info("Rollout progress monitor started")
+
+    def stop_progress_monitor(self) -> None:
+        """Stop the rollout progress monitoring thread"""
+        if not self._progress_enabled:
+            return
+
+        if self._progress_thread is None or not self._progress_thread.is_alive():
+            return
+
+        logger.info("Stopping rollout progress monitor...")
+        self._progress_stop_event.set()
+
+        if self._progress_thread is not None:
+            self._progress_thread.join(timeout=5.0)
+            if self._progress_thread.is_alive():
+                logger.warning("Rollout progress monitor thread did not stop gracefully")
+
+        logger.info("Rollout progress monitor stopped")
+
+    def _progress_monitor_loop(self) -> None:
+        """Main rollout progress monitoring loop - runs in separate thread"""
+        try:
+            while not self._progress_stop_event.is_set():
+                try:
+                    # Collect metrics
+                    metrics = self.get_progress_metrics()
+                    self._progress_last_metrics = metrics
+
+                    # Update display
+                    self._update_progress_display(metrics)
+
+                    self._progress_update_count += 1
+
+                except Exception as e:
+                    logger.error(f"Error in rollout progress monitor loop: {e}", exc_info=True)
+
+                # Sleep until next update
+                time.sleep(self._progress_update_interval)
+
+        except Exception as e:
+            logger.error(f"Fatal error in rollout progress monitor loop: {e}", exc_info=True)
+
+    def _update_progress_display(self, metrics: dict[str, Any]) -> None:
+        """
+        Update progress display with latest metrics
+
+        Args:
+            metrics: Progress metrics
+        """
+        # Extract metrics
+        active_workers = metrics.get("active_rollout_workers", 0)
+        dataloader_info = metrics.get("dataloader")
+        pool_info = metrics.get("trajectory_pool")
+        sync_mode = metrics.get("sync_mode")
+
+        # Determine if we should show batch progress
+        show_batch_progress = sync_mode in ["sync", "batch-async"] and dataloader_info is not None
+
+        # Format display strings
+        display_parts = []
+
+        # 1. DataLoader batch progress (only in sync/batch-async modes)
+        if show_batch_progress and dataloader_info:
+            batch_size = dataloader_info.get("batch_size", 0)
+            batch_remaining = dataloader_info.get("batch_remaining", 0)
+            batch_processed = dataloader_info.get("batch_processed", 0)
+            display_parts.append(
+                f"Batch: {batch_processed}/{batch_size} (remaining: {batch_remaining})"
+            )
+
+        # 2. Active rollout workers
+        display_parts.append(f"Workers: {active_workers} active")
+
+        # 3. Trajectories received
+        if pool_info:
+            finished_trajectories = pool_info.get("finished_trajectories", 0)
+            display_parts.append(f"Trajectories: {finished_trajectories} finished")
+
+        # Log periodically
+        if self._progress_update_count % self._progress_log_interval == 0:
+            if self._progress_use_tqdm:
+                try:
+                    from tqdm import tqdm
+
+                    message = f"Progress: {' | '.join(display_parts)}"
+                    tqdm.write(message)
+                except ImportError:
+                    logger.info(f"Progress: {' | '.join(display_parts)}")
+            else:
+                logger.info(f"Progress: {' | '.join(display_parts)}")
+
 
 class ActivityTrackerProxy:
     """
@@ -416,3 +626,26 @@ class ActivityTrackerProxy:
             raise ValueError(f"Unsupported backend: {backend}")
 
         execute(self._central_tracker.experiment_logger_post, backend, **kwargs)
+
+    def get_progress_metrics(self) -> dict[str, Any]:
+        """
+        Get progress metrics from the central tracker
+
+        Returns:
+            dict: Progress metrics from all modules
+        """
+        from .executor import execute
+
+        return execute(self._central_tracker.get_progress_metrics)
+
+    def start_progress_monitor(self) -> None:
+        """Start the rollout progress monitor in the central tracker"""
+        from .executor import execute
+
+        execute(self._central_tracker.start_progress_monitor)
+
+    def stop_progress_monitor(self) -> None:
+        """Stop the rollout progress monitor in the central tracker"""
+        from .executor import execute
+
+        execute(self._central_tracker.stop_progress_monitor)
