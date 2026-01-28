@@ -17,6 +17,7 @@ OpenAI-compatible Inference Service Client for NexRL framework
 """
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -26,6 +27,38 @@ from omegaconf import DictConfig
 from .base_inference_service_client import InferenceServiceClient, hf_tokenizer
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level tokenizer cache (shared within each Python process)
+# In local mode: all workers share this cache (same process)
+# In Ray mode: each actor has its own cache (separate processes)
+_TOKENIZER_CACHE: dict[str, Any] = {}
+_TOKENIZER_LOCK = threading.Lock()
+
+
+def _get_cached_tokenizer(tokenizer_path: str):
+    """
+    Get or create a cached tokenizer (process-local singleton).
+
+    This cache is shared across all clients in the same Python process:
+    - Local mode: All rollout workers share one tokenizer
+    - Ray mode: Each actor process has one tokenizer
+
+    Args:
+        tokenizer_path: Path to the tokenizer
+
+    Returns:
+        Cached tokenizer instance
+    """
+    with _TOKENIZER_LOCK:
+        if tokenizer_path not in _TOKENIZER_CACHE:
+            logger.info(
+                f"Loading tokenizer for path: {tokenizer_path} (first time in this process)"
+            )
+            _TOKENIZER_CACHE[tokenizer_path] = hf_tokenizer(tokenizer_path)
+        else:
+            logger.debug(f"Reusing cached tokenizer for path: {tokenizer_path}")
+        return _TOKENIZER_CACHE[tokenizer_path]
 
 
 class OpenAIInferenceServiceClient(InferenceServiceClient):
@@ -53,9 +86,9 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
             timeout=1000,
         )
 
-        # Initialize tokenizer using the hf_tokenizer utility
+        # Initialize tokenizer using cached tokenizer (shared within process)
         tokenizer_path = config.inference_service.get("tokenizer", config.inference_service.model)
-        self.tokenizer = hf_tokenizer(tokenizer_path)
+        self.tokenizer = _get_cached_tokenizer(tokenizer_path)
 
     def apply_chat_template(
         self,
