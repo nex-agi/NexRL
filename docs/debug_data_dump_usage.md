@@ -2,6 +2,8 @@
 
 ## 1. 启用 Debug Data Dump
 
+### 1.1 Self-hosted Mode
+
 在 YAML 配置文件中添加 `debug` 节：
 
 ```yaml
@@ -23,6 +25,28 @@ debug:
   # Param/gradient dump 需要指定参数名 pattern
   target_param_pattern: "model\\.layers\\.0\\.self_attn\\.q_proj\\.weight"
 ```
+
+### 1.2 Remote API Mode
+
+使用 Weaver 远程训练服务时，配置 `remote_api_dump_options`：
+
+```yaml
+debug:
+  enable_data_dump: true
+  dump_dir: "${oc.env:EXPERIMENT_PATH}/debug_dump"
+  dump_every_n_steps: 1
+
+  # Remote API mode 数据类型
+  remote_api_dump_options:
+    prepared_trajectories: true   # GRPO advantage computation results
+    datums: true                  # Converted datums sent to Weaver
+    training_metrics: true        # Metrics returned from Weaver
+```
+
+**Remote API Mode 数据类型说明**：
+- `prepared_trajectories`: GRPO 优势值计算结果（包含 advantages, logprobs 等）
+- `datums`: 发送给 Weaver 的训练数据（Datum 格式）
+- `training_metrics`: Weaver 返回的训练指标（loss, tokens 等）
 
 ## 2. 从 Dump 文件加载 Trajectory 训练
 
@@ -68,6 +92,8 @@ rollout_worker:
 
 ## 4. Dump 目录结构
 
+### 4.1 Self-hosted Mode
+
 ```
 debug_dump/
 ├── trajectory/          # Rollout trajectories
@@ -77,4 +103,16 @@ debug_dump/
 ├── loss/                # Loss values
 ├── param/               # Parameters (if enabled)
 └── gradient/            # Gradients (if enabled)
+```
+
+### 4.2 Remote API Mode
+
+```
+debug_dump/
+├── prepared_trajectories/   # GRPO advantage computation results
+│   └── step_000000.pt
+├── datums/                  # Datums sent to Weaver
+│   └── step_000000.pt
+└── training_metrics/        # Metrics from Weaver
+    └── step_000000.pt
 ```
