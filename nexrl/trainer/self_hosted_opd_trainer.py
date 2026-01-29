@@ -28,6 +28,7 @@ Memory-efficient implementation using log probabilities instead of full logits:
 Reference: https://thinkingmachines.ai/blog/on-policy-distillation/
 """
 
+import copy
 import logging
 import os
 import time
@@ -39,7 +40,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from ..nexrl_types import Batch
 from ..train_service_client import TrainServiceClient
-from ..utils.config_utils import get_actor_train_service_config_by_name
+from ..utils.config_utils import get_train_service_config_by_role
 from ..utils.init_utils import create_train_service_client
 from .self_hosted_trainer import SelfHostedTrainer
 
@@ -67,26 +68,18 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         # OPD requires explicit identifiers for multi-worker-group setup
         # We need to set up both student (actor) and teacher service configs
 
-        # Get train_service configs and service names
+        # Get train_service configs
         train_service = config.get("train_service")
-        actor_train_service_name = config.get("actor_train_service")
-        teacher_train_service_name = config.get("teacher_train_service")
 
-        if not train_service or not actor_train_service_name:
-            raise ValueError("train_service and actor_train_service must be specified")
-        if not teacher_train_service_name:
-            raise ValueError("teacher_train_service must be specified for OPD trainer")
+        if not train_service:
+            raise ValueError("train_service must be specified")
 
         # Get student (actor) service config
-        student_service_config = get_actor_train_service_config_by_name(
-            train_service, actor_train_service_name
-        )
+        student_service_config = get_train_service_config_by_role(train_service, "actor")
         self._student_identifier = student_service_config.get("identifier", "student")
 
         # Get teacher service config
-        teacher_service_config = get_actor_train_service_config_by_name(
-            train_service, teacher_train_service_name
-        )
+        teacher_service_config = get_train_service_config_by_role(train_service, "teacher")
         self._teacher_identifier = teacher_service_config.get("identifier", "teacher")
         self._teacher_url = teacher_service_config.url
         self._teacher_backend = teacher_service_config.backend
@@ -98,6 +91,22 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
 
         # Call parent __init__ - it will use actor_train_service to create the student client
         super().__init__(config)
+
+        # setup teacher world size
+        teacher_node_world_size = self._teacher_init_config.resource.get("world_size", None)
+        if teacher_node_world_size is None:
+            raise ValueError(
+                "world_size must be specified in teacher train_service.resource config"
+            )
+        gpus_per_pod = self._teacher_init_config.resource.get("gpus_per_pod", None)
+        if gpus_per_pod is None:
+            raise ValueError(
+                "gpus_per_pod must be specified in teacher train_service.resource config"
+            )
+        self._teacher_world_size = int(teacher_node_world_size * gpus_per_pod)
+        logger.info(
+            f"SelfHostedOpdTrainer [teacher] initialized with world size: {self._teacher_world_size}"
+        )
 
         # OPD algorithm configuration
         self._algorithm_config = config.algorithm
@@ -223,54 +232,71 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         # Step 0: Log rollout metrics
         self._log_rollout_metrics(batch)
 
-        # Step 1: Prepare batch - compute global token num and scoring mask
-        batch.metadata["global_token_num"] = torch.sum(
-            batch.values["attention_mask"]
-            * batch.values.get("loss_mask", batch.values["attention_mask"]),
-            dim=-1,
-        ).tolist()
+        def pre_process_batch(batch: Batch) -> Batch:
+            batch.metadata["global_token_num"] = torch.sum(
+                batch.values["attention_mask"]
+                * batch.values.get("loss_mask", batch.values["attention_mask"]),
+                dim=-1,
+            ).tolist()
 
-        if "loss_mask" in batch.values:
-            batch.values["scoring_attention_mask"] = (
-                batch.values["attention_mask"] * batch.values["loss_mask"]
+            if "loss_mask" in batch.values:
+                batch.values["scoring_attention_mask"] = (
+                    batch.values["attention_mask"] * batch.values["loss_mask"]
+                )
+            else:
+                batch.values["scoring_attention_mask"] = batch.values["attention_mask"].clone()
+
+            # Remove left and right padding
+            batch = Batch.remove_redundant_left_padding(
+                batch,
+                pad_token_id=self._pad_token_id,
+                anchor_field="input_ids",
+                fields=[
+                    "input_ids",
+                    "prompts",
+                    "attention_mask",
+                    "position_ids",
+                    "scoring_attention_mask",
+                    "loss_mask",
+                ],
             )
-        else:
-            batch.values["scoring_attention_mask"] = batch.values["attention_mask"].clone()
 
-        # Remove left and right padding
-        batch = Batch.remove_redundant_left_padding(
-            batch,
-            pad_token_id=self._pad_token_id,
-            anchor_field="input_ids",
-            fields=[
-                "input_ids",
-                "prompts",
-                "attention_mask",
-                "position_ids",
-                "scoring_attention_mask",
-                "loss_mask",
-            ],
-        )
+            batch = Batch.remove_redundant_right_padding(
+                batch,
+                pad_token_id=self._pad_token_id,
+                anchor_field="input_ids",
+                fields=[
+                    "input_ids",
+                    "responses",
+                    "attention_mask",
+                    "position_ids",
+                    "scoring_attention_mask",
+                    "loss_mask",
+                ],
+            )
+            return batch
 
-        batch = Batch.remove_redundant_right_padding(
-            batch,
-            pad_token_id=self._pad_token_id,
-            anchor_field="input_ids",
-            fields=[
-                "input_ids",
-                "responses",
-                "attention_mask",
-                "position_ids",
-                "scoring_attention_mask",
-                "loss_mask",
-            ],
-        )
+        # Step 1: Pre-process batch
+        batch = batch.pad_to_world_size(world_size=self.world_size)  # pad to student world size
+        batch = pre_process_batch(batch)
 
         # Step 2: Get teacher log probabilities for student trajectories
         logger.info("[OPD] Fetching teacher log probabilities...")
-        teacher_log_probs = self._get_teacher_log_probs(batch)
-        logger.info(f"[OPD] Teacher log probs shape: {teacher_log_probs.shape}")
-        logger.info("[OPD] Memory saved vs logits: ~40,000x for typical vocab sizes")
+        student_batch_size = batch.metadata["batch_size"]
+        # Build teacher batch from the (already padded) student batch to guarantee alignment,
+        # then pad extra samples only for teacher world-size divisibility.
+        teacher_batch = copy.deepcopy(batch).pad_to_world_size(world_size=self._teacher_world_size)
+        teacher_batch = pre_process_batch(teacher_batch)
+        teacher_batch_size = teacher_batch.metadata["batch_size"]
+        teacher_log_probs = self._get_teacher_log_probs(teacher_batch)
+        if teacher_batch_size != student_batch_size:
+            logger.info(
+                f"[OPD] Teacher batch padded from {student_batch_size} to {teacher_batch_size}, "
+                f"teacher_log_probs shape(before slicing): {teacher_log_probs.shape}"
+            )
+            teacher_log_probs = teacher_log_probs[:student_batch_size]
+
+        logger.info(f"[OPD] teacher_log_probs shape: {teacher_log_probs.shape}")
 
         # Step 3: Add teacher log probs to batch
         batch.values["teacher_log_probs"] = teacher_log_probs
@@ -559,9 +585,9 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         # Step 2: Convert trajectories to batch
         # identifier serves as model_tag for batch tracking
         batch = Batch.from_trajectories(trajectories, model_tag=self._identifier)
-        batch = batch.pad_to_world_size(world_size=self.world_size)
 
-        # Step 3: Prepare batch (OPD-specific: get teacher log probs)
+        # Step 3: Prepare batch
+        # (OPD-specific: get teacher log probs, also having padding logic)
         logger.info("Trainer begin batch preparation!")
         preparation_start = time.time()
         batch, preparation_metrics = self._prepare_batch(batch)

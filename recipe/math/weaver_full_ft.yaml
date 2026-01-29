@@ -46,7 +46,7 @@ weight:
 
 service:
   inference_service:
-    model_tag: "default"
+    identifier: "default"
     model: "Qwen/Qwen3-8B"
     max_tokens: ${data.max_response_length}
     tokenizer: null
@@ -63,7 +63,7 @@ service:
     training_mode: "full_ft"
 
   train_service:
-    model_tag: "default"
+    identifier: "default"
     backend: weaver
 
     config:

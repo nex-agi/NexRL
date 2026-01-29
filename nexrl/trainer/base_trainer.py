@@ -27,7 +27,7 @@ from omegaconf import DictConfig
 from ..base_module import NexRLModule
 from ..executor import execute
 from ..nexrl_types import Trajectory
-from ..utils.config_utils import get_actor_train_service_config_by_name
+from ..utils.config_utils import get_train_service_config_by_role
 
 if TYPE_CHECKING:
     from ..trajectory_pool import TrajectoryPool
@@ -67,18 +67,15 @@ class BaseTrainer(NexRLModule):
 
         # Get the actor train service identifier for weight sync coordination
         train_service = config.get("train_service")
-        actor_train_service_name = config.get("actor_train_service")
-        if train_service and actor_train_service_name:
-            actor_train_service = get_actor_train_service_config_by_name(
-                train_service, actor_train_service_name
-            )
-            self._identifier = actor_train_service.get("identifier", "default")
+        if train_service:
+            try:
+                actor_train_service = get_train_service_config_by_role(train_service, "actor")
+                self._identifier = actor_train_service.get("identifier", "default")
+            except ValueError:
+                # Fallback if no actor role found
+                self._identifier = config.get("identifier", "default")
         else:
-            # Fallback for backwards compatibility
-            self._identifier = config.get(
-                "model_tag",
-                config.get("train_service", {}).get("model_tag", "default"),
-            )
+            self._identifier = config.get("identifier", "default")
         logger.info(f"Trainer using identifier: {self._identifier}")
 
         # Timing tracking

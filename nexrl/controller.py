@@ -731,9 +731,8 @@ class NexRLController:
 
     def _init_rollout_worker_inference_clients(self):
         """Initialize inference service clients for all rollout workers"""
-        # Get backend from actor train service
-        actor_train_service = get_actor_train_service_config(self._config)
-        backend = actor_train_service.backend
+        # Get backend from inference service
+        backend = self._config.service.inference_service.backend
         for worker in self.rollout_workers:
             if backend == "tinker":
                 execute(worker.init_inference_service_client, self._tinker_service_holder)
@@ -788,26 +787,11 @@ class NexRLController:
             insert_config(
                 self._config.trainer.algorithm, "train_service", self._config.service.train_service
             )
-            insert_config(
-                self._config.trainer.algorithm,
-                "actor_train_service",
-                self._config.service.actor_train_service,
-            )
+
         insert_config(self._config.trainer, "_config_file_path", config_file_path)
 
-        # Add train_service and actor_train_service config directly to trainer
+        # Add train_service config directly to trainer
         insert_config(self._config.trainer, "train_service", self._config.service.train_service)
-        insert_config(
-            self._config.trainer, "actor_train_service", self._config.service.actor_train_service
-        )
-
-        # Add teacher_train_service config to trainer if exists (for OPD)
-        if self._config.service.get("teacher_train_service", None) is not None:
-            insert_config(
-                self._config.trainer,
-                "teacher_train_service",
-                self._config.service.teacher_train_service,
-            )
 
         if launch_mode == "ray":
             self._init_ray_resources(module_configs)

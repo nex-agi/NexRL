@@ -123,13 +123,7 @@ class AgentRolloutWorker(BaseRolloutWorker):
         # Extract ground_truth - could be in task directly or in reward_model dict
         ground_truth = task["reward_model"].get("ground_truth", "")
         # identifier serves as model_tag for trajectory routing
-        identifier = task.get(
-            "model_tag",  # Allow task to override
-            self._config.get(
-                "model_tag",  # Fallback to rollout_worker config
-                self._config.inference_service.get("identifier", "default"),  # Use identifier
-            ),
-        )
+        identifier = self._config.inference_service.get("identifier", "default")
 
         # Process each agent result into a trajectory
         last_result = None

@@ -121,7 +121,7 @@ rollout_worker:
 
   # model_tag: Route rollouts to the correct trajectory pool
   # identifier serves as model_tag for weight sync coordination
-  model_tag: ${service.inference_service.identifier}
+
 
   # num_workers: Number of parallel rollout workers
   # Increase for higher throughput (requires more resources)
@@ -392,13 +392,6 @@ service:
     lora_rank: 32
     api_key: ""
 
-  # actor_train_service: Name of the main actor training service
-  # This specifies which train service handles the primary model training (student for OPD)
-  actor_train_service: "student"
-
-  # teacher_train_service: Name of the teacher training service (for OPD)
-  teacher_train_service: "teacher"
-
   #----------------------------------------
   # Training Services
   #----------------------------------------
@@ -410,6 +403,7 @@ service:
     student:
       # identifier: Unique identifier for this training service (also used as model_tag)
       identifier: "student"
+      role: "actor"
 
       # backend: Training backend
       backend: http
@@ -524,6 +518,7 @@ service:
     teacher:
       # identifier: Unique identifier for this training service (also used as model_tag)
       identifier: "teacher"
+      role: "teacher"
 
       # model_path: Path to teacher model weights
       model_path: "/gpfs/models/huggingface.co/Qwen/Qwen2.5-7B-Instruct"
@@ -536,7 +531,7 @@ service:
 
       # Resource configuration (for Kubernetes deployment)
       resource:
-        world_size: 1          # Number of GPU pods for teacher
+        world_size: 2          # Number of GPU pods for teacher
         gpus_per_pod: 8        # GPUs per pod
         memory_per_gpu: 200    # GPU memory in GB
 

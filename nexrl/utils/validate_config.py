@@ -57,19 +57,21 @@ def validate_config(config: DictConfig) -> None:
         "identifier"
     ), "service.inference_service.identifier must be set"
 
-    # Validate service.actor_train_service is specified and points to a valid service
+    # Validate exactly one service has role="actor"
     train_service = config.service.train_service
-    actor_service_name = config.service.get("actor_train_service")
-    assert actor_service_name, "service.actor_train_service must be specified"
+    actor_services = [
+        k
+        for k, v in train_service.items()
+        if isinstance(v, (dict, DictConfig)) and v.get("role") == "actor"
+    ]
+    assert (
+        len(actor_services) == 1
+    ), f"Exactly one train_service must have role='actor', found {len(actor_services)}"
 
     # Collect valid service names (keys that map to dict configs)
-    # Note: With OmegaConf, nested configs are DictConfig objects, not regular dicts
     valid_service_names = [
         k for k in train_service.keys() if isinstance(train_service[k], (dict, DictConfig))
     ]
-    assert (
-        actor_service_name in valid_service_names
-    ), f"service.actor_train_service='{actor_service_name}' must be one of: {valid_service_names}"
 
     # Validate each train_service group has an identifier
     train_identifiers = []

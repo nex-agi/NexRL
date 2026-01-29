@@ -74,7 +74,7 @@ weight:
 
 service:
   inference_service:
-    model_tag: "default"
+    identifier: "default"
     api_key: "EMPTY"
     base_url: "${oc.env:INFERENCE_BASE_URL}"
     model: ${resource.inference.served_model_name}
@@ -86,7 +86,8 @@ service:
     weight_type: "sglang_nckpt"
 
   train_service:
-    model_tag: "default"
+    identifier: "default"
+    role: "actor"
     backend: http
     world_size: 8
     url: "http://${oc.env:API_SERVER_URL}:8000"
