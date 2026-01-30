@@ -64,6 +64,17 @@ def set_logging_basic_config():
             format="[%(asctime)s][%(name)s][%(levelname)s] - %(message)s",
         )
 
+    # Suppress NexAU logs - only show WARNING and above
+    # This catches all loggers in the nexau.* hierarchy (nexau.archs.*, nexau.core.*, etc.)
+    nexau_log_level = os.getenv("NEXAU_LOG_LEVEL", "WARNING").upper()
+    nexau_level = level_mapping.get(nexau_log_level, logging.WARNING)
+    logging.getLogger("nexau").setLevel(nexau_level)
+    logging.getLogger("tools").setLevel(nexau_level)
+
+    print(f"📋 Logging Configuration:")
+    print(f"   ├─ NexRL logging level: {logging.getLevelName(level)} ({level})")
+    print(f"   └─ NexAU logging level: {logging.getLevelName(nexau_level)} ({nexau_level})")
+
 
 def log_rollout_metrics(trajectories: list[Trajectory], metrics: dict[str, Any]) -> None:
     if not trajectories:
