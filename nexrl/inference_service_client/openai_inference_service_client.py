@@ -48,6 +48,9 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         self._config = config
         self._model_tag = config.inference_service.get("model_tag", "default")
         self._freeze_for_weight_sync = config.inference_service.get("freeze_for_weight_sync", True)
+        self._parse_tool_call_arguments = config.inference_service.get(
+            "parse_tool_call_arguments", False
+        )
 
         # Initialize OpenAI client based on config
         self._oai_llm = openai.OpenAI(
@@ -79,32 +82,36 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         Returns:
             str | list[int]: Formatted prompt string or token IDs
         """
+
         try:
             messages_copy = deepcopy(messages)
-            for message in messages_copy:
-                tool_calls = message.get("tool_calls")
-                if not tool_calls:
-                    continue
-                for tool_call in tool_calls:
-                    function = tool_call.get("function")
-                    arguments = function.get("arguments")
-                    if not arguments:
+
+            # Parse tool call arguments if configured to do so
+            if self._parse_tool_call_arguments:
+                for message in messages_copy:
+                    tool_calls = message.get("tool_calls")
+                    if not tool_calls:
                         continue
-                    if isinstance(arguments, str):
-                        if arguments != "":
-                            try:
-                                function["arguments"] = json.loads(arguments, strict=False)
-                            except json.JSONDecodeError as e:
-                                logger.warning(
-                                    f"Failed to parse tool call arguments as JSON: {e}, "
-                                    f"keeping as string: {arguments[:100]}"
-                                )
-                                # Keep as string if JSON parsing fails
-                        else:
+                    for tool_call in tool_calls:
+                        function = tool_call.get("function")
+                        arguments = function.get("arguments")
+                        if not arguments:
+                            continue
+                        if isinstance(arguments, str):
+                            if arguments != "":
+                                try:
+                                    function["arguments"] = json.loads(arguments, strict=False)
+                                except json.JSONDecodeError as e:
+                                    logger.warning(
+                                        f"Failed to parse tool call arguments as JSON: {e}, "
+                                        f"keeping as string: {arguments[:100]}"
+                                    )
+                                    # Keep as string if JSON parsing fails
+                            else:
+                                function["arguments"] = {}
+                        elif arguments is None:
                             function["arguments"] = {}
-                    elif arguments is None:
-                        function["arguments"] = {}
-                    # If arguments is already a dict, leave it as is
+                        # If arguments is already a dict, leave it as is
 
             token_ids = self.tokenizer.apply_chat_template(
                 messages_copy,
