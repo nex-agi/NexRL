@@ -23,6 +23,20 @@ import numpy as np
 
 from ..nexrl_types import Trajectory  # pylint: disable=relative-beyond-top-level
 
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 def set_logging_basic_config():
     """
@@ -63,6 +77,17 @@ def set_logging_basic_config():
             level=level,
             format="[%(asctime)s][%(name)s][%(levelname)s] - %(message)s",
         )
+
+    # Suppress NexAU logs - only show WARNING and above
+    # This catches all loggers in the nexau.* hierarchy (nexau.archs.*, nexau.core.*, etc.)
+    nexau_log_level = os.getenv("NEXAU_LOG_LEVEL", "WARNING").upper()
+    nexau_level = level_mapping.get(nexau_log_level, logging.WARNING)
+    logging.getLogger("nexau").setLevel(nexau_level)
+    logging.getLogger("tools").setLevel(nexau_level)
+
+    print(f"📋 Logging Configuration:")
+    print(f"   ├─ NexRL logging level: {logging.getLevelName(level)} ({level})")
+    print(f"   └─ NexAU logging level: {logging.getLevelName(nexau_level)} ({nexau_level})")
 
 
 def log_rollout_metrics(trajectories: list[Trajectory], metrics: dict[str, Any]) -> None:
