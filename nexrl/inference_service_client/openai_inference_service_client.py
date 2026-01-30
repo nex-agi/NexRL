@@ -16,8 +16,10 @@
 OpenAI-compatible Inference Service Client for NexRL framework
 """
 
+import json
 import logging
 import time
+from copy import deepcopy
 from typing import Any
 
 import openai
@@ -76,12 +78,44 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         Returns:
             str | list[int]: Formatted prompt string or token IDs
         """
-        return self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=add_generation_prompt,
-            tokenize=tokenize,
-            tools=tools,
-        )
+        try:
+            messages_copy = deepcopy(messages)
+            for message in messages_copy:
+                tool_calls = message.get("tool_calls")
+                if not tool_calls:
+                    continue
+                for tool_call in tool_calls:
+                    function = tool_call.get("function")
+                    arguments = function.get("arguments")
+                    if not arguments:
+                        continue
+                    if isinstance(arguments, str):
+                        if arguments != "":
+                            try:
+                                function["arguments"] = json.loads(arguments, strict=False)
+                            except json.JSONDecodeError as e:
+                                logger.warning(
+                                    f"Failed to parse tool call arguments as JSON: {e}, "
+                                    f"keeping as string: {arguments[:100]}"
+                                )
+                                # Keep as string if JSON parsing fails
+                        else:
+                            function["arguments"] = {}
+                    elif arguments is None:
+                        function["arguments"] = {}
+                    # If arguments is already a dict, leave it as is
+
+            token_ids = self.tokenizer.apply_chat_template(
+                messages_copy,
+                add_generation_prompt=add_generation_prompt,
+                tokenize=tokenize,
+                tools=tools,
+            )
+            print("success apply_chat_template")
+            return token_ids
+        except Exception as e:
+            logger.error(f"Error in apply_chat_template: {e}")
+            raise e
 
     def completion(self, prompt: str, **kwargs) -> dict[str, Any]:
         """
