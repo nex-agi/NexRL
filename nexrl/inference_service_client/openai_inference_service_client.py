@@ -19,6 +19,7 @@ OpenAI-compatible Inference Service Client for NexRL framework
 import json
 import logging
 import time
+import traceback
 from copy import deepcopy
 from typing import Any
 
@@ -111,10 +112,11 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
                 tokenize=tokenize,
                 tools=tools,
             )
-            print("success apply_chat_template")
+            logger.info("success apply_chat_template")
             return token_ids
         except Exception as e:
             logger.error(f"Error in apply_chat_template: {e}")
+            logger.error(traceback.format_exc())
             raise e
 
     def completion(self, prompt: str, **kwargs) -> dict[str, Any]:
