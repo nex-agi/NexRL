@@ -214,9 +214,27 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
     # 2. Migrate flat train_service → nested structure with role
     # ============================================================================
     train_service = config.service.train_service
-    is_flat_structure = "backend" in train_service or "url" in train_service
 
+    # Check where 'backend' is located to determine structure
+    has_top_level_backend = "backend" in train_service or "url" in train_service
+
+    # Check if any nested dicts have 'backend' (indicating nested services)
+    nested_services_with_backend = [
+        k
+        for k, v in train_service.items()
+        if (isinstance(v, dict) or OmegaConf.is_dict(v)) and ("backend" in v or "url" in v)
+    ]
+
+    # Ambiguous: both top-level and nested backends exist
+    if has_top_level_backend and len(nested_services_with_backend) > 0:
+        raise ValueError(
+            "Cannot auto-migrate: found 'backend' at both top-level and nested levels in train_service. "
+            "This configuration is ambiguous. Please manually update to the new format."
+        )
+
+    is_flat_structure = has_top_level_backend
     if is_flat_structure:
+
         # Migrate flat structure to nested
         old_config = dict(train_service)
         train_service.clear()

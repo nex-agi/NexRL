@@ -57,22 +57,26 @@ def migrate_legacy_config(cfg: dict) -> dict:
     # ============================================================================
     if "train_service" in cfg.get("service", {}):
         train_service = cfg["service"]["train_service"]
-        is_flat = "backend" in train_service or "url" in train_service
 
+        # Check where 'backend' is located to determine structure
+        has_top_level_backend = "backend" in train_service or "url" in train_service
+
+        # Check if any nested dicts have 'backend' (indicating nested services)
+        nested_services_with_backend = [
+            k
+            for k, v in train_service.items()
+            if isinstance(v, dict) and ("backend" in v or "url" in v)
+        ]
+
+        # Ambiguous: both top-level and nested backends exist
+        if has_top_level_backend and len(nested_services_with_backend) > 0:
+            raise ValueError(
+                "Cannot auto-migrate: found 'backend' at both top-level and nested levels in train_service. "
+                "This configuration is ambiguous. Please manually update to the new format."
+            )
+
+        is_flat = has_top_level_backend
         if is_flat:
-            # Check if there are already nested service entries (not config sections like 'actor')
-            # Nested services would have 'role' or be dict entries with service-like structure
-            flat_config_keys = {"backend", "url", "model_tag", "world_size", "actor", "identifier"}
-            existing_services = [
-                k
-                for k, v in train_service.items()
-                if isinstance(v, dict) and k not in flat_config_keys
-            ]
-            if len(existing_services) > 0:
-                raise ValueError(
-                    "Cannot auto-migrate: found flat train_service structure mixed with nested services. "
-                    "This configuration is ambiguous. Please manually update to the new format."
-                )
 
             old_config = dict(train_service)
             train_service.clear()
