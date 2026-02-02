@@ -41,18 +41,62 @@ def load_config(config_path: Path) -> dict:
 
 
 def load_agent_settings(cfg: dict) -> dict[str, Any]:
-    """Load agent worker settings from config."""
-    agent_cfg = (cfg.get("resource") or {}).get("agent") or {}
-    if not isinstance(agent_cfg, dict):
-        raise ValueError("resource.agent must be a mapping when provided")
+    """Load agent worker settings from config.
 
-    if "num_workers" not in agent_cfg or "agents_per_worker" not in agent_cfg:
-        raise ValueError("resource.agent must define num_workers and agents_per_worker")
+    Supports both old and new config structures:
 
-    num_workers = agent_cfg.get("num_workers")
-    agents_per_worker = agent_cfg.get("agents_per_worker")
+    Old (deprecated) structure:
+        resource.agent.num_workers: 1
+        resource.agent.agents_per_worker: 32
+
+    New structure:
+        rollout_worker.resource.num_workers: 1
+        rollout_worker.resource.agents_per_worker: 32
+    """
+    # Check for old structure first (backward compatibility)
+    agent_cfg = (cfg.get("resource") or {}).get("agent")
+    if agent_cfg and isinstance(agent_cfg, dict):
+        import warnings
+
+        warnings.warn(
+            "The 'resource.agent' config structure is deprecated. "
+            "Please migrate to the new 'rollout_worker.resource' structure. "
+            "See migration guide in docs/developer-guide/09-recipes/.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        if "num_workers" not in agent_cfg or "agents_per_worker" not in agent_cfg:
+            raise ValueError("resource.agent must define num_workers and agents_per_worker")
+
+        num_workers = agent_cfg.get("num_workers")
+        agents_per_worker = agent_cfg.get("agents_per_worker")
+
+        for key, value in {
+            "num_workers": num_workers,
+            "agents_per_worker": agents_per_worker,
+        }.items():
+            if not isinstance(value, int):
+                raise ValueError(f"resource.agent.{key} must be an integer")
+
+        return {"num_workers": num_workers, "agents_per_worker": agents_per_worker}
+
+    # Use new structure
+    rollout_worker = cfg.get("rollout_worker") or {}
+    if not isinstance(rollout_worker, dict):
+        raise ValueError("rollout_worker must be a mapping")
+
+    agent_resource = rollout_worker.get("resource") or {}
+    if not isinstance(agent_resource, dict):
+        raise ValueError("rollout_worker.resource must be a mapping when provided")
+
+    if "num_workers" not in agent_resource or "agents_per_worker" not in agent_resource:
+        raise ValueError("rollout_worker.resource must define num_workers and agents_per_worker")
+
+    num_workers = agent_resource.get("num_workers")
+    agents_per_worker = agent_resource.get("agents_per_worker")
     for key, value in {"num_workers": num_workers, "agents_per_worker": agents_per_worker}.items():
         if not isinstance(value, int):
-            raise ValueError(f"resource.agent.{key} must be an integer")
+            raise ValueError(f"rollout_worker.resource.{key} must be an integer")
 
     return {"num_workers": num_workers, "agents_per_worker": agents_per_worker}

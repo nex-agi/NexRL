@@ -63,15 +63,17 @@ service:
     training_mode: "full_ft"
 
   train_service:
-    identifier: "default"
-    backend: weaver
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: weaver
 
-    config:
-      loss_fn: "importance_sampling"
-      learning_rate: 2e-6
-      beta1: 0.9
-      beta2: 0.999
-      eps: 1e-8
-      entropy_coeff: 1e-4
-      weight_decay: 1e-2
-      grad_clip_norm: 1.0
+      config:
+        loss_fn: "importance_sampling"
+        learning_rate: 2e-6
+        beta1: 0.9
+        beta2: 0.999
+        eps: 1e-8
+        entropy_coeff: 1e-4
+        weight_decay: 1e-2
+        grad_clip_norm: 1.0
