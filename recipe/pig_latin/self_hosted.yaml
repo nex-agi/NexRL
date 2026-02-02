@@ -86,12 +86,3 @@ service:
           grad_offload: false
           optimizer_offload: false
           fsdp_size: -1
-
-#==========================================
-# ROLLOUT WORKER RESOURCE CONFIGURATION
-#==========================================
-
-rollout_worker:
-  resource:
-    num_workers: 0
-    agents_per_worker: 32

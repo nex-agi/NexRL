@@ -11,9 +11,9 @@ This guide documents the configuration structure changes introduced in NexRL v2.
 ### 🎯 Key Feature: Centralized Migration
 
 All backward compatibility is handled by **just 3 migration functions**:
-- `nexrl/controller.py::_migrate_legacy_config()` - for the library
-- `scripts/self_hosted/config_utils.py::migrate_legacy_config()` - for scripts
-- `cli/self_hosted/config_utils.py::migrate_legacy_config()` - for CLI
+- `nexrl/utils/config_utils.py::migrate_legacy_config()` - for the library
+- `scripts/common/config_utils.py::migrate_legacy_config()` - for scripts
+- `cli/common/config_utils.py::migrate_legacy_config()` - for CLI
 
 **To remove in v3.0**: Delete these 3 functions + 3 call sites. That's it! ✨
 
@@ -218,6 +218,7 @@ resource:
     model_path: "/path/to/model"
     backend: "bp-sglang"
     extra_args: ""
+    # ... any custom fields
 ```
 
 **New:**
@@ -231,7 +232,10 @@ service:
       gpus_per_replica: 2
       backend: "bp-sglang"
       extra_args: ""
+      # ... all other fields copied automatically
 ```
+
+**Note**: ALL fields from `resource.inference` are automatically migrated to `inference_service.resource` (except `model_path` and `served_model_name` which go to top level).
 
 #### 4c. Agent/Rollout Worker Resources
 
@@ -253,6 +257,7 @@ rollout_worker:
 
 #### Backward Compatibility
 - ✅ Old `resource.*` structures are still supported
+- ✅ **Smart identifier matching**: If there's only one train service and one resource entry, they're automatically matched even with different identifiers
 - ⚠️ Deprecation warnings will be shown
 - 📅 Planned removal: v3.0
 
@@ -400,12 +405,19 @@ Assuming role='actor'. Please add explicit role='actor' field.
 ### Error Examples
 
 ```
-ValueError: Multiple train services found without 'role' field: ['service1', 'service2'].
-Cannot determine which is 'actor'. Please add explicit 'role' field to each service.
+ValueError: Cannot auto-migrate: found 'backend' at both top-level and nested levels in train_service.
+This configuration is ambiguous. Please manually update to the new format.
 ```
 
 ```
-ValueError: Exactly one train_service must have role='actor', found 2
+ValueError: Cannot auto-migrate resource.train: identifier mismatch.
+Service 'main_actor' has identifier 'default', but resource.train has keys: ['service1', 'service2'].
+Please manually update identifiers to match.
+```
+
+```
+ValueError: Multiple train services found without 'role' field: ['service1', 'service2'].
+Cannot determine which is 'actor'. Please add explicit 'role' field to each service.
 ```
 
 ---
@@ -484,26 +496,31 @@ Thanks to automatic migration:
 
 All backward compatibility is handled by **three migration functions** - one for each deployment context. This centralized approach makes the codebase clean and easy to maintain:
 
-#### 1. **NexRL Library** - `nexrl/controller.py`
+#### 1. **NexRL Library** - `nexrl/utils/config_utils.py`
 ```python
-def _migrate_legacy_config(self):
+def migrate_legacy_config(config: DictConfig):
     """Centralized migration of all legacy config structures.
 
     Handles ALL backward compatibility transformations:
     1. model_tag → identifier
     2. resource.train → service.train_service.*.resource
-    3. resource.inference → service.inference_service.resource
+    3. resource.inference → service.inference_service.resource (all fields)
     4. resource.agent → rollout_worker.resource
     5. Flat train_service → nested with role
     6. Add missing role fields
+
+    Smart features:
+    - Auto-matches single service with single resource (even with different identifiers)
+    - Copies all resource fields dynamically (future-proof)
+    - Detects flat vs nested by backend location (robust)
 
     To remove backward compatibility: delete this function and its call.
     """
 ```
 
-**Called from**: `_init_modules()` during controller initialization
+**Called from**: `main.py::main_task()` before creating controller
 
-#### 2. **Deployment Scripts** - `scripts/self_hosted/config_utils.py`
+#### 2. **Deployment Scripts** - `scripts/common/config_utils.py`
 ```python
 def migrate_legacy_config(cfg: dict) -> dict:
     """Centralized migration for deployment scripts.
@@ -513,9 +530,9 @@ def migrate_legacy_config(cfg: dict) -> dict:
     """
 ```
 
-**Called from**: `load_config()` wrapper when loading YAML configs
+**Called from**: `load_config()` when loading YAML configs
 
-#### 3. **CLI Tools** - `cli/self_hosted/config_utils.py`
+#### 3. **CLI Tools** - `cli/common/config_utils.py`
 ```python
 def migrate_legacy_config(cfg: dict) -> dict:
     """Centralized migration for CLI tools.
@@ -547,19 +564,19 @@ When it's time to remove backward compatibility support (v3.0), the process is e
 
 **Delete these functions:**
 
-1. **`nexrl/controller.py`** (lines ~284-427)
+1. **`nexrl/utils/config_utils.py`** (~lines 182-380)
    ```python
-   def _migrate_legacy_config(self):
+   def migrate_legacy_config(config: DictConfig):
        # DELETE this entire function
    ```
 
-2. **`scripts/self_hosted/config_utils.py`** (lines ~14-130)
+2. **`scripts/common/config_utils.py`** (~lines 28-200)
    ```python
    def migrate_legacy_config(cfg: dict) -> dict:
        # DELETE this entire function
    ```
 
-3. **`cli/self_hosted/config_utils.py`** (lines ~22-138)
+3. **`cli/common/config_utils.py`** (~lines 28-200)
    ```python
    def migrate_legacy_config(cfg: dict) -> dict:
        # DELETE this entire function
@@ -569,21 +586,23 @@ When it's time to remove backward compatibility support (v3.0), the process is e
 
 **Remove these calls:**
 
-1. **`nexrl/controller.py::_init_modules()`**
+1. **`nexrl/main.py::main_task()`**
    ```python
-   # DELETE this line (around line 793)
-   self._migrate_legacy_config()
+   # DELETE this line (around line 35)
+   migrate_legacy_config(config)
    ```
 
-2. **`scripts/self_hosted/config_utils.py::load_config()`**
+2. **`scripts/common/config_utils.py::load_config()`**
    ```python
-   # DELETE these lines (around lines 17-19)
-   cfg = migrate_legacy_config(cfg)
+   # DELETE this line (around line 239)
+   cfg_dict = migrate_legacy_config(cfg_dict)
    ```
 
-3. **CLI scripts that call `migrate_legacy_config()`**
-   - Check where config loading happens in CLI
-   - Remove migration calls
+3. **`cli/common/config_utils.py::load_config()`**
+   ```python
+   # DELETE the migration call in load_config()
+   cfg_dict = migrate_legacy_config(cfg_dict)
+   ```
 
 ### Step 3: Update Validation (Optional Strict Mode)
 

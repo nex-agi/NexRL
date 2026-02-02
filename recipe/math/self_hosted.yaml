@@ -151,12 +151,3 @@ service:
           log_prob_micro_batch_size: 4
           n: ${data.rollout_repeat_n}
           use_weight_provider: false
-
-#==========================================
-# ROLLOUT WORKER RESOURCE CONFIGURATION
-#==========================================
-
-rollout_worker:
-  resource:
-    num_workers: 0
-    agents_per_worker: 32
