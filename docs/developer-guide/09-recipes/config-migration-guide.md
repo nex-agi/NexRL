@@ -8,6 +8,17 @@ This guide documents the configuration structure changes introduced in NexRL v2.
 
 **Target Removal Date**: Legacy support planned for removal in v3.0 (TBD)
 
+### 🎯 Key Feature: Centralized Migration
+
+All backward compatibility is handled by **just 3 migration functions**:
+- `nexrl/controller.py::_migrate_legacy_config()` - for the library
+- `scripts/self_hosted/config_utils.py::migrate_legacy_config()` - for scripts
+- `cli/self_hosted/config_utils.py::migrate_legacy_config()` - for CLI
+
+**To remove in v3.0**: Delete these 3 functions + 3 call sites. That's it! ✨
+
+See [Implementation Architecture](#implementation-architecture) for details.
+
 ---
 
 ## Summary of Changes
@@ -359,10 +370,13 @@ service:
 
 ### Current Behavior
 
-The system now includes comprehensive validation that:
-1. ✅ Accepts both old and new formats
-2. ⚠️ Shows deprecation warnings for old formats
-3. ❌ Errors on ambiguous configurations
+The system now includes comprehensive **automatic migration** that:
+1. ✅ Automatically converts old format to new format at runtime
+2. ✅ Accepts both old and new formats seamlessly
+3. ⚠️ Shows deprecation warnings for old formats
+4. ❌ Errors on ambiguous configurations
+
+**No manual intervention needed** - old configs work automatically while you plan your migration!
 
 ### Warning Examples
 
@@ -398,38 +412,48 @@ ValueError: Exactly one train_service must have role='actor', found 2
 
 ## Testing Your Migration
 
+### Important: Old Configs Work Automatically!
+
+Your old configs will work **without any changes** thanks to automatic migration. However, we recommend updating to the new format to prepare for v3.0.
+
 ### Step-by-Step Validation
 
-1. **Backup your config**
+1. **Test with existing config (no changes needed)**
+   ```bash
+   # Your old config works as-is!
+   bash cli/self_hosted/train.sh recipe/my_old_recipe.yaml
+   ```
+
+   **Check console output** for deprecation warnings showing what needs updating.
+
+2. **Backup your config**
    ```bash
    cp recipe/my_recipe.yaml recipe/my_recipe.yaml.backup
    ```
 
-2. **Run validation**
-   ```bash
-   python scripts/validate_recipe.py recipe/my_recipe.yaml
-   ```
-
-3. **Check for warnings**
-   - Look for `DeprecationWarning` in output
-   - Note which fields need updating
-
-4. **Update configuration**
+3. **Update configuration incrementally**
    - Follow migration instructions above
    - Update one section at a time
+   - Old and new formats can coexist during migration
 
-5. **Re-validate**
-   - Run validation again
-   - Confirm no deprecation warnings
-
-6. **Test training**
+4. **Test after each change**
    ```bash
+   python scripts/validate_recipe.py recipe/my_recipe.yaml
    bash cli/self_hosted/train.sh recipe/my_recipe.yaml
    ```
 
-7. **Monitor logs**
-   - Check for any runtime warnings
-   - Confirm training starts successfully
+5. **Verify no warnings**
+   - Run training one more time
+   - Confirm **no** deprecation warnings in console
+   - Training should work identically
+
+### Zero-Downtime Migration
+
+Thanks to automatic migration:
+- ✅ Continue using old configs while planning migration
+- ✅ Migrate services one at a time
+- ✅ Roll back anytime by reverting config changes
+- ✅ No service interruption needed
 
 ---
 
@@ -454,81 +478,170 @@ ValueError: Exactly one train_service must have role='actor', found 2
 
 ---
 
+## Implementation Architecture
+
+### Centralized Migration Functions
+
+All backward compatibility is handled by **three migration functions** - one for each deployment context. This centralized approach makes the codebase clean and easy to maintain:
+
+#### 1. **NexRL Library** - `nexrl/controller.py`
+```python
+def _migrate_legacy_config(self):
+    """Centralized migration of all legacy config structures.
+
+    Handles ALL backward compatibility transformations:
+    1. model_tag → identifier
+    2. resource.train → service.train_service.*.resource
+    3. resource.inference → service.inference_service.resource
+    4. resource.agent → rollout_worker.resource
+    5. Flat train_service → nested with role
+    6. Add missing role fields
+
+    To remove backward compatibility: delete this function and its call.
+    """
+```
+
+**Called from**: `_init_modules()` during controller initialization
+
+#### 2. **Deployment Scripts** - `scripts/self_hosted/config_utils.py`
+```python
+def migrate_legacy_config(cfg: dict) -> dict:
+    """Centralized migration for deployment scripts.
+
+    Same transformations as library version.
+    To remove backward compatibility: delete this function and its calls.
+    """
+```
+
+**Called from**: `load_config()` wrapper when loading YAML configs
+
+#### 3. **CLI Tools** - `cli/self_hosted/config_utils.py`
+```python
+def migrate_legacy_config(cfg: dict) -> dict:
+    """Centralized migration for CLI tools.
+
+    Same transformations as library version.
+    To remove backward compatibility: delete this function and its calls.
+    """
+```
+
+**Called from**: Config loading in CLI scripts
+
+### Benefits of This Architecture
+
+| Benefit | Impact |
+|---------|--------|
+| **Single Source of Truth** | All migrations in 3 clearly marked functions |
+| **Easy Removal** | Delete 3 functions + 3 call sites = done |
+| **Clean Codebase** | Rest of code uses only new format |
+| **Maintainable** | Add/remove migrations in one place |
+| **Testable** | Easy to test migration logic independently |
+
+---
+
 ## Removal Instructions for Maintainers
 
-When it's time to remove backward compatibility support (v3.0):
+When it's time to remove backward compatibility support (v3.0), the process is extremely simple thanks to centralized migration functions:
 
-### 1. Remove Fallback Code
+### Step 1: Delete Migration Functions (3 files)
 
-**Files to update:**
-- `scripts/common/config_utils.py` - Remove old `resource.agent` fallback
-- `scripts/self_hosted/config_utils.py` - Remove old `resource.train` and `resource.inference` fallbacks
-- `nexrl/utils/config_utils.py` - Remove flat structure and role detection fallbacks
-- `nexrl/utils/validate_config.py` - Remove old field validation fallbacks
-- `nexrl/inference_service_client/openai_inference_service_client.py` - Remove `model_tag` fallback
-- `nexrl/inference_service_client/remote_api_inference_service_client.py` - Remove `model_tag` fallback
-- `nexrl/mock/mock_inference_service_client.py` - Remove `model_tag` fallback
-- `nexrl/weight_sync/weight_sync_controller.py` - Remove `model_tag` fallback
-- `nexrl/trainer/base_trainer.py` - Remove `model_tag` fallback
+**Delete these functions:**
 
-### 2. Update Validation to Be Strict
+1. **`nexrl/controller.py`** (lines ~284-427)
+   ```python
+   def _migrate_legacy_config(self):
+       # DELETE this entire function
+   ```
 
-In `nexrl/utils/validate_config.py`:
+2. **`scripts/self_hosted/config_utils.py`** (lines ~14-130)
+   ```python
+   def migrate_legacy_config(cfg: dict) -> dict:
+       # DELETE this entire function
+   ```
+
+3. **`cli/self_hosted/config_utils.py`** (lines ~22-138)
+   ```python
+   def migrate_legacy_config(cfg: dict) -> dict:
+       # DELETE this entire function
+   ```
+
+### Step 2: Remove Function Calls (3 locations)
+
+**Remove these calls:**
+
+1. **`nexrl/controller.py::_init_modules()`**
+   ```python
+   # DELETE this line (around line 793)
+   self._migrate_legacy_config()
+   ```
+
+2. **`scripts/self_hosted/config_utils.py::load_config()`**
+   ```python
+   # DELETE these lines (around lines 17-19)
+   cfg = migrate_legacy_config(cfg)
+   ```
+
+3. **CLI scripts that call `migrate_legacy_config()`**
+   - Check where config loading happens in CLI
+   - Remove migration calls
+
+### Step 3: Update Validation (Optional Strict Mode)
+
+In `nexrl/utils/validate_config.py`, optionally make validation stricter:
 
 ```python
-# Remove backward compatibility checks
-# Change warnings to errors
-# Require new format fields
-
-# Example:
+# Change from accepting both to requiring new format only
 assert config.service.inference_service.get("identifier"), \
-    "service.inference_service.identifier is required"
+    "service.inference_service.identifier is required (model_tag no longer supported)"
 
-# No more model_tag fallback
-```
-
-### 3. Search and Remove
-
-Search for these patterns and remove:
-```bash
-# Search for deprecation warnings
-grep -r "DeprecationWarning" nexrl/
-grep -r "deprecated" scripts/
-
-# Search for model_tag references
-grep -r "model_tag" nexrl/
-grep -r "model_tag" scripts/
-
-# Search for old resource paths
-grep -r "resource.train" scripts/
-grep -r "resource.inference" scripts/
-grep -r "resource.agent" scripts/
-```
-
-### 4. Update Tests
-
-- Remove tests for legacy format
-- Add tests to ensure legacy format fails with clear error messages
-- Update all test configs to new format
-
-### 5. Update Documentation
-
-- Remove migration guide (or archive it)
-- Update all examples to use new format only
-- Add clear error messages when old format is detected
-
-### 6. Create Migration Error Messages
-
-When old format is detected in v3.0, show helpful errors:
-
-```python
+# Add helpful error for old format
 if "model_tag" in config.service.inference_service:
     raise ValueError(
         "The 'model_tag' field is no longer supported as of v3.0. "
-        "Please use 'identifier' instead. "
+        "Please rename to 'identifier'. "
         "See migration guide at: https://docs.nexrl.ai/migration-v3"
     )
 ```
+
+### Step 4: Update Tests
+
+- Remove tests for legacy format compatibility
+- Add tests to ensure legacy format fails with clear error messages
+- Verify all test configs use new format
+
+### Step 5: Update Documentation
+
+- Archive this migration guide (move to `docs/archive/`)
+- Update all examples to use new format only
+- Add v3.0 breaking changes notice
+
+### That's It!
+
+The entire codebase now uses only the new format. No scattered backward compatibility code to hunt down!
+
+### Quick Verification
+
+After removal, search to confirm no legacy code remains:
+
+```bash
+# Should find nothing (except in archived docs)
+grep -r "migrate_legacy_config" nexrl/ scripts/ cli/
+grep -r "model_tag.*backward" nexrl/
+grep -r "resource.train.*deprecated" scripts/
+```
+
+### Estimated Effort
+
+- **Time**: ~30 minutes
+- **Files Changed**: 3-6 files
+- **Lines Removed**: ~300-400 lines
+- **Risk**: Low (all changes localized)
+
+Compare this to the old approach which would require:
+- ❌ ~15+ files to modify
+- ❌ ~50+ scattered locations to find and remove
+- ❌ High risk of missing hidden fallback code
+- ❌ 4-8 hours of work
 
 ---
 
@@ -562,6 +675,23 @@ if "model_tag" in config.service.inference_service:
 
 ## Conclusion
 
-This migration maintains full backward compatibility while preparing for a cleaner, more flexible configuration structure. Take your time to migrate, test thoroughly, and reach out if you encounter any issues.
+This migration system provides **automatic backward compatibility** while preparing for a cleaner, more flexible configuration structure. Your old configs continue to work seamlessly with just deprecation warnings.
 
-**Recommended Action**: Start migrating your configurations now to stay ahead of the v3.0 changes.
+### Key Takeaways
+
+✅ **No Immediate Action Required**: Old configs work automatically
+✅ **Centralized Migration**: All compatibility in 3 easy-to-remove functions
+✅ **Zero Downtime**: Migrate at your own pace
+✅ **Simple Removal**: Delete 3 functions when ready for v3.0
+
+**Recommended Action**: While old configs work automatically, we recommend migrating to the new format when convenient to stay ahead of v3.0 changes.
+
+---
+
+## Questions or Issues?
+
+- 📖 Review examples in `recipe/` directory
+- 🐛 Report issues on GitHub
+- 💬 Check console warnings for specific guidance
+
+**The system will guide you** - just run your old config and check the deprecation warnings for what to update!

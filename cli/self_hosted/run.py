@@ -40,13 +40,14 @@ sys.path.insert(0, str(CLI_DIR))
 # pylint: disable=wrong-import-position
 import yaml  # type: ignore
 
-from ..common.config_utils import load_agent_settings, load_config
-from ..utils import config_manager, k8s_utils
-from . import yaml_builder as builder
-from .config_utils import (
+from ..common.config_utils import (
+    load_agent_settings,
+    load_config,
     load_identifier_world_sizes,
     load_inference_resource,
 )
+from ..utils import config_manager, k8s_utils
+from . import yaml_builder as builder
 
 # pylint: enable=wrong-import-position
 

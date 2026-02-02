@@ -40,10 +40,9 @@ import logging
 
 import yaml  # type: ignore
 
-from ..common.config_utils import load_agent_settings, load_config
+from ..common.config_utils import load_agent_settings, load_config, load_model_name
 from ..utils import config_manager, k8s_utils
 from . import yaml_builder as builder
-from .config_utils import load_model_name
 
 # pylint: enable=wrong-import-position
 

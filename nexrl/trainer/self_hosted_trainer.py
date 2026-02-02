@@ -71,11 +71,6 @@ class SelfHostedTrainer(BaseTrainer):
             self._actor_train_service_config.url,
             self._actor_train_service_config.get("identifier", None),
         )
-        # self.world_size = self._actor_train_service_config.resource.get("world_size", None)
-        # if self.world_size is None:
-        #     raise ValueError("world_size must be specified in actor train_service.resource config")
-        # gpus_per_pod = self._actor_train_service_config.resource.get("gpus_per_pod", -1)
-        # self.world_size = int(self.world_size * gpus_per_pod)
         node_world_size = self._actor_train_service_config.resource.get("world_size", None)
         if node_world_size is None:
             raise ValueError("world_size must be specified in actor train_service.resource config")
