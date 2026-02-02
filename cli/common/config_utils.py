@@ -189,9 +189,12 @@ def migrate_legacy_config(cfg: dict) -> dict:
         if "resource" not in inference_service:
             inference_service["resource"] = {}
 
-        for field in ["replicas", "gpus_per_replica", "backend", "extra_args"]:
-            if field in old_inference and field not in inference_service["resource"]:
-                inference_service["resource"][field] = old_inference[field]
+        # Skip top-level fields that are migrated separately (model_path, served_model_name)
+        skip_fields = {"model_path", "served_model_name"}
+
+        for field, value in old_inference.items():
+            if field not in skip_fields and field not in inference_service["resource"]:
+                inference_service["resource"][field] = value
                 migrations_applied.append(
                     f"resource.inference.{field} → inference_service.resource.{field}"
                 )

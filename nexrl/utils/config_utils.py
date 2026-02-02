@@ -346,18 +346,19 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
                     "resource.inference.model_path → inference_service.model_path"
                 )
 
-        # Migrate resource fields
+        # Migrate resource fields - copy all fields dynamically
         if "resource" not in inference_service:
             inference_service["resource"] = {}
 
-        resource_fields = ["replicas", "gpus_per_replica", "backend", "extra_args"]
-        for field in resource_fields:
-            if field in old_inference_resource:
-                if field not in inference_service["resource"]:
-                    inference_service["resource"][field] = old_inference_resource[field]
-                    migrations_applied.append(
-                        f"resource.inference.{field} → inference_service.resource.{field}"
-                    )
+        # Skip top-level fields that are migrated separately (model_path, served_model_name)
+        skip_fields = {"model_path", "served_model_name"}
+
+        for field, value in old_inference_resource.items():
+            if field not in skip_fields and field not in inference_service["resource"]:
+                inference_service["resource"][field] = value
+                migrations_applied.append(
+                    f"resource.inference.{field} → inference_service.resource.{field}"
+                )
 
     # ============================================================================
     # 7. Migrate resource.agent → rollout_worker.resource
