@@ -10,7 +10,7 @@ LLM service for rollout generation.
 
 ### Training Service
 
-Backend service for model training (self-hosted only).
+Backend service for model training (self-hosted only). Supports multiple services for advanced training methods like On-Policy Distillation.
 
 ## Inference Service Configuration
 
@@ -19,7 +19,7 @@ Backend service for model training (self-hosted only).
 ```yaml
 service:
   inference_service:
-    model_tag: "default"
+    identifier: "default"
     api_key: "EMPTY"
     base_url: "${oc.env:INFERENCE_BASE_URL}"
     model: "my-model"
@@ -36,7 +36,7 @@ service:
 ```yaml
 service:
   inference_service:
-    model_tag: "default"
+    identifier: "default"
     api_key: "EMPTY"
     base_url: "${oc.env:INFERENCE_BASE_URL}"
     model: "my-model"
@@ -51,7 +51,7 @@ service:
 ```yaml
 service:
   inference_service:
-    model_tag: "default"
+    identifier: "default"
     api_key: "${oc.env:OPENAI_API_KEY}"
     base_url: "https://api.openai.com/v1"
     model: "gpt-4"
@@ -63,7 +63,7 @@ service:
 
 ## Inference Service Options
 
-### model_tag
+### identifier
 
 **Type:** `string`
 **Default:** `"default"`
@@ -74,6 +74,8 @@ Model identifier for tracking.
 - Multi-model training
 - Model version tracking
 - Weight synchronization coordination
+
+**Note:** Previously named `model_tag` (deprecated but still supported).
 
 ### api_key
 
@@ -224,66 +226,135 @@ weight_type: "vllm_ckpt"
 
 ## Training Service Configuration (Self-Hosted)
 
-### HTTP Backend (NexTrainer)
+### Single Service (Standard Training)
 
 ```yaml
 service:
   train_service:
-    model_tag: "default"
-    backend: http
-    world_size: 8
-    url: "http://${oc.env:API_SERVER_URL}:8000"
+    main_actor:  # Service name
+      identifier: "default"
+      role: "actor"
+      backend: http
+      url: "http://${oc.env:API_SERVER_URL}:8000"
 
-    actor:
-      checkpoint_manager: dcp
+      resource:
+        world_size: 8
+        gpus_per_pod: 8
 
-      model:
-        path: "${oc.env:NEXRL_MODEL_PATH}/model"
-        use_remove_padding: true
+      actor:
+        checkpoint_manager: dcp
 
-      # Training hyperparameters
-      ppo_mini_batch_size: 28
-      ppo_micro_batch_size: 4
-      grad_clip: 1.0
-      clip_ratio: 0.2
-      entropy_coeff: 1e-4
-      ppo_epochs: 1
+        model:
+          path: "${oc.env:NEXRL_MODEL_PATH}/model"
+          use_remove_padding: true
 
-      # Optimizer
-      optim:
-        lr: 2e-6
-        lr_warmup_steps_ratio: 0.0
-        warmup_style: constant
+        # Training hyperparameters
+        ppo_mini_batch_size: 28
+        ppo_micro_batch_size: 4
+        grad_clip: 1.0
+        clip_ratio: 0.2
+        entropy_coeff: 1e-4
+        ppo_epochs: 1
 
-      # FSDP configuration
-      fsdp_config:
-        wrap_policy:
-          min_num_params: 0
-        param_offload: false
-        grad_offload: false
+        # Optimizer
+        optim:
+          lr: 2e-6
+          lr_warmup_steps_ratio: 0.0
+          warmup_style: constant
+
+        # FSDP configuration
+        fsdp_config:
+          wrap_policy:
+            min_num_params: 0
+          param_offload: false
+          grad_offload: false
+```
+
+### Multiple Services (On-Policy Distillation)
+
+```yaml
+service:
+  train_service:
+    student_service:
+      identifier: "student"
+      role: "actor"
+      backend: http
+      url: "http://${oc.env:API_SERVER_URL}:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/student"
+        # ... student hyperparameters
+
+    teacher_service:
+      identifier: "teacher"
+      role: "teacher"
+      backend: http
+      url: "http://${oc.env:API_SERVER_URL}:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/teacher"
+        # ... teacher hyperparameters
 ```
 
 ## Training Service Options
 
-### model_tag
+### Service Name
 
 **Type:** `string`
-**Default:** `"default"`
+**Default:** User-defined (e.g., `main_actor`, `student_service`)
 
-Model identifier (matches inference service).
+Top-level key for each training service. Choose descriptive names.
+
+### identifier
+
+**Type:** `string`
+**Default:** Required
+
+Model identifier for the service.
+
+**Note:** Previously named `model_tag` (deprecated but still supported).
+
+### role
+
+**Type:** `string`
+**Options:** `"actor"`, `"teacher"`
+**Default:** `"actor"` (auto-inferred for single service)
+
+Service role in training.
+
+- `actor`: Primary training service (required)
+- `teacher`: Teacher model for distillation (optional)
 
 ### backend
 
 **Type:** `string`
-**Options:** `"http"`, `"mock"`
+**Options:** `"http"`, `"weaver"`, `"tinker"`, `"mock"`
 **Default:** `"http"`
 
 Training service backend.
 
 - `http`: NexTrainer HTTP API
+- `weaver`: Weaver training service
+- `tinker`: Tinker cloud service
 - `mock`: Mock trainer for testing
 
-### world_size
+### url
+
+**Type:** `string`
+**Default:** Required (for http/weaver backends)
+
+Training service URL.
+
+**Example:**
+```yaml
+url: "http://${oc.env:API_SERVER_URL}:8000"
+```
+
+### resource.world_size
 
 **Type:** `int`
 **Default:** Required
@@ -292,27 +363,23 @@ Number of GPUs for training.
 
 **Examples:**
 ```yaml
-# Single GPU
-world_size: 1
+resource:
+  # Single GPU
+  world_size: 1
 
-# 8 GPUs
-world_size: 8
+  # 8 GPUs
+  world_size: 8
 
-# Multi-node (32 GPUs)
-world_size: 32
+  # Multi-node (32 GPUs)
+  world_size: 32
 ```
 
-### url
+### resource.gpus_per_pod
 
-**Type:** `string`
-**Default:** Required
+**Type:** `int`
+**Default:** Same as `world_size`
 
-Training service URL.
-
-**Example:**
-```yaml
-url: "http://${oc.env:API_SERVER_URL}:8000"
-```
+GPUs per pod for distributed training.
 
 ## Actor Configuration (NexTrainer)
 
@@ -497,18 +564,23 @@ Offload gradients to CPU.
 ```yaml
 service:
   inference_service:
+    identifier: "default"
     base_url: "http://localhost:8000"
     model: "debug-model"
     backend: sglang
     max_retries: 1
 
   train_service:
-    backend: http
-    world_size: 1
-    url: "http://localhost:8001"
-    actor:
-      ppo_mini_batch_size: 8
-      ppo_micro_batch_size: 2
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: http
+      url: "http://localhost:8001"
+      resource:
+        world_size: 1
+      actor:
+        ppo_mini_batch_size: 8
+        ppo_micro_batch_size: 2
 ```
 
 ### Production Self-Hosted
@@ -516,23 +588,28 @@ service:
 ```yaml
 service:
   inference_service:
+    identifier: "default"
     base_url: "${oc.env:INFERENCE_BASE_URL}"
-    model: "${resource.inference.served_model_name}"
+    model: "my-model"
     backend: sglang
     max_retries: 3
     freeze_for_weight_sync: true
     weight_type: "sglang_nckpt"
 
   train_service:
-    backend: http
-    world_size: 8
-    url: "http://${oc.env:API_SERVER_URL}:8000"
-    actor:
-      checkpoint_manager: dcp
-      ppo_mini_batch_size: 28
-      ppo_micro_batch_size: 4
-      optim:
-        lr: 2e-6
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: http
+      url: "http://${oc.env:API_SERVER_URL}:8000"
+      resource:
+        world_size: 8
+      actor:
+        checkpoint_manager: dcp
+        ppo_mini_batch_size: 28
+        ppo_micro_batch_size: 4
+        optim:
+          lr: 2e-6
 ```
 
 ### OpenAI API
@@ -540,6 +617,7 @@ service:
 ```yaml
 service:
   inference_service:
+    identifier: "default"
     api_key: "${oc.env:OPENAI_API_KEY}"
     base_url: "https://api.openai.com/v1"
     model: "gpt-4"
@@ -547,6 +625,38 @@ service:
     backend: openai
     max_retries: 3
     freeze_for_weight_sync: false
+```
+
+### On-Policy Distillation
+
+```yaml
+service:
+  train_service:
+    student_service:
+      identifier: "student"
+      role: "actor"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/student"
+        optim:
+          lr: 2e-6
+
+    teacher_service:
+      identifier: "teacher"
+      role: "teacher"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/teacher"
+        optim:
+          lr: 1e-6
 ```
 
 ## Troubleshooting
