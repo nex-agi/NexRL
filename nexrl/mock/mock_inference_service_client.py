@@ -95,7 +95,22 @@ class MockInferenceServiceClient(InferenceServiceClient):
         super().__init__()
         self._config = config
         # identifier serves as model_tag for weight sync coordination
-        self._identifier = config.inference_service.get("identifier", "default")
+        # Support both old 'model_tag' and new 'identifier' fields
+        identifier = config.inference_service.get("identifier")
+        model_tag = config.inference_service.get("model_tag")
+
+        if identifier is None and model_tag is not None:
+            import warnings
+
+            warnings.warn(
+                "The 'model_tag' field is deprecated. Please use 'identifier' instead. "
+                "See migration guide in docs/developer-guide/09-recipes/.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._identifier = model_tag
+        else:
+            self._identifier = identifier or "default"
         self._freeze_for_weight_sync = config.inference_service.get("freeze_for_weight_sync", True)
 
         # Use mock tokenizer instead of loading from HuggingFace

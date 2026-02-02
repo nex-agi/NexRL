@@ -62,6 +62,10 @@ def get_train_service_config_by_role(train_service: DictConfig, role: str) -> Di
     """
     Get a train service configuration by its role.
 
+    Supports backward compatibility:
+    - Old flat structure: train_service is directly a config (no nested services)
+    - Missing role field: If only one service, assume it's the requested role
+
     Args:
         train_service: The train_service configuration dict
         role: The role to search for (e.g., "actor", "teacher")
@@ -72,12 +76,59 @@ def get_train_service_config_by_role(train_service: DictConfig, role: str) -> Di
     Raises:
         ValueError: If no service with the specified role is found
     """
+    import warnings
+
+    # Check if this is the old flat structure (has backend/url directly)
+    # Old structure: config.service.train_service.backend exists
+    # New structure: config.service.train_service.<name>.backend exists
+    if "backend" in train_service or "url" in train_service:
+        warnings.warn(
+            "The flat train_service config structure is deprecated. "
+            "Please migrate to the new nested structure with explicit role field. "
+            "See migration guide in docs/developer-guide/09-recipes/.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        # In old structure, there's only one service, so return it for any role
+        return train_service
+
+    # New structure: search for service with matching role
     # Note: With OmegaConf, nested configs are DictConfig objects
-    for service_config in train_service.values():
+    services_with_role = []
+    services_without_role = []
+
+    for service_name, service_config in train_service.items():
         if isinstance(service_config, (dict, DictConfig)):
             if service_config.get("role") == role:
-                return service_config
+                services_with_role.append((service_name, service_config))
+            elif "backend" in service_config or "url" in service_config:
+                # This looks like a service config without role
+                services_without_role.append((service_name, service_config))
 
+    # If we found services with the matching role, return the first one
+    if services_with_role:
+        return services_with_role[0][1]
+
+    # If no services have roles, but there's only one service, assume it's the requested role
+    if not services_with_role and len(services_without_role) == 1:
+        warnings.warn(
+            f"Train service '{services_without_role[0][0]}' is missing 'role' field. "
+            f"Assuming role='{role}'. Please add explicit role field. "
+            "See migration guide in docs/developer-guide/09-recipes/.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return services_without_role[0][1]
+
+    # Multiple services without roles - cannot determine which is which
+    if len(services_without_role) > 1:
+        service_names = [name for name, _ in services_without_role]
+        raise ValueError(
+            f"Multiple train services found without 'role' field: {service_names}. "
+            f"Cannot determine which is '{role}'. Please add explicit 'role' field to each service."
+        )
+
+    # No matching services found
     available_services = [
         k for k in train_service.keys() if isinstance(train_service[k], (dict, DictConfig))
     ]

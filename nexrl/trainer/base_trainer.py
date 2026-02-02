@@ -66,16 +66,36 @@ class BaseTrainer(NexRLModule):
         self._weight_sync_controller: "WeightSyncController" = None  # type: ignore
 
         # Get the actor train service identifier for weight sync coordination
+        # Support both old 'model_tag' and new 'identifier' fields
         train_service = config.get("train_service")
         if train_service:
             try:
                 actor_train_service = get_train_service_config_by_role(train_service, "actor")
-                self._identifier = actor_train_service.get("identifier", "default")
+                identifier = actor_train_service.get("identifier")
+                model_tag = actor_train_service.get("model_tag")
+
+                if identifier is None and model_tag is not None:
+                    import warnings
+
+                    warnings.warn(
+                        "Using deprecated 'model_tag' field in train_service. "
+                        "Please rename to 'identifier'. "
+                        "See migration guide in docs/developer-guide/09-recipes/.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    self._identifier = model_tag
+                else:
+                    self._identifier = identifier or "default"
             except ValueError:
                 # Fallback if no actor role found
-                self._identifier = config.get("identifier", "default")
+                identifier = config.get("identifier")
+                model_tag = config.get("model_tag")
+                self._identifier = identifier or model_tag or "default"
         else:
-            self._identifier = config.get("identifier", "default")
+            identifier = config.get("identifier")
+            model_tag = config.get("model_tag")
+            self._identifier = identifier or model_tag or "default"
         logger.info(f"Trainer using identifier: {self._identifier}")
 
         # Timing tracking

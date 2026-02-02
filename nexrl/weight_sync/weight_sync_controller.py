@@ -87,7 +87,22 @@ class WeightSyncController(NexRLModule):
         # Note: Currently only supports a single inference service
         self._inference_service_config = config.get("inference_service", {})
         # identifier serves as model_tag for weight sync coordination
-        self._identifier = self._inference_service_config.get("identifier", "default")
+        # Support both old 'model_tag' and new 'identifier' fields
+        identifier = self._inference_service_config.get("identifier")
+        model_tag = self._inference_service_config.get("model_tag")
+
+        if identifier is None and model_tag is not None:
+            import warnings
+
+            warnings.warn(
+                "The 'model_tag' field is deprecated. Please use 'identifier' instead. "
+                "See migration guide in docs/developer-guide/09-recipes/.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._identifier = model_tag
+        else:
+            self._identifier = identifier or "default"
         self._rollout_services[self._identifier] = RolloutServiceState(
             model_name=self._inference_service_config.model,
             weight_type=self._inference_service_config.weight_type,
