@@ -60,6 +60,20 @@ def migrate_legacy_config(cfg: dict) -> dict:
         is_flat = "backend" in train_service or "url" in train_service
 
         if is_flat:
+            # Check if there are already nested service entries (not config sections like 'actor')
+            # Nested services would have 'role' or be dict entries with service-like structure
+            flat_config_keys = {"backend", "url", "model_tag", "world_size", "actor", "identifier"}
+            existing_services = [
+                k
+                for k, v in train_service.items()
+                if isinstance(v, dict) and k not in flat_config_keys
+            ]
+            if len(existing_services) > 0:
+                raise ValueError(
+                    "Cannot auto-migrate: found flat train_service structure mixed with nested services. "
+                    "This configuration is ambiguous. Please manually update to the new format."
+                )
+
             old_config = dict(train_service)
             train_service.clear()
             service_name = "main_actor"
@@ -102,25 +116,48 @@ def migrate_legacy_config(cfg: dict) -> dict:
     # 5. Migrate resource.train → train_service.*.resource
     # ============================================================================
     old_train_resources = (cfg.get("resource") or {}).get("train")
-    if old_train_resources and "train_service" in cfg.get("service", {}):
-        for service_name, service_config in cfg["service"]["train_service"].items():
-            if not isinstance(service_config, dict):
-                continue
+    if (
+        old_train_resources
+        and isinstance(old_train_resources, dict)
+        and "train_service" in cfg.get("service", {})
+    ):
+        train_service_items = [
+            (k, v) for k, v in cfg["service"]["train_service"].items() if isinstance(v, dict)
+        ]
 
-            service_identifier = service_config.get("identifier")
+        for service_name, service_config in train_service_items:
+            service_identifier = service_config.get("identifier") or service_config.get("model_tag")
+            resource_spec = None
+            resource_key = None
+
+            # Try exact match first
             if service_identifier and service_identifier in old_train_resources:
+                resource_key = service_identifier
                 resource_spec = old_train_resources[service_identifier]
-                if isinstance(resource_spec, dict):
-                    if "resource" not in service_config:
-                        service_config["resource"] = {}
+            # Fallback: if only one train service and only one resource entry, use it
+            elif len(train_service_items) == 1 and len(old_train_resources) == 1:
+                resource_key = next(iter(old_train_resources))
+                resource_spec = old_train_resources[resource_key]
+            # Multiple entries with no match - error
+            elif len(train_service_items) > 1 or len(old_train_resources) > 1:
+                raise ValueError(
+                    f"Cannot auto-migrate resource.train: identifier mismatch. "
+                    f"Service '{service_name}' has identifier '{service_identifier}', "
+                    f"but resource.train has keys: {list(old_train_resources.keys())}. "
+                    f"Please manually update identifiers to match."
+                )
 
-                    for key, value in resource_spec.items():
-                        if key not in service_config["resource"]:
-                            service_config["resource"][key] = value
+            if resource_spec and isinstance(resource_spec, dict):
+                if "resource" not in service_config:
+                    service_config["resource"] = {}
 
-                    migrations_applied.append(
-                        f"resource.train.{service_identifier} → train_service.{service_name}.resource"
-                    )
+                for key, value in resource_spec.items():
+                    if key not in service_config["resource"]:
+                        service_config["resource"][key] = value
+
+                migrations_applied.append(
+                    f"resource.train.{resource_key} → train_service.{service_name}.resource"
+                )
 
     # ============================================================================
     # 6. Migrate resource.inference → inference_service.resource
@@ -129,17 +166,25 @@ def migrate_legacy_config(cfg: dict) -> dict:
     if old_inference and "inference_service" in cfg.get("service", {}):
         inference_service = cfg["service"]["inference_service"]
 
-        if "served_model_name" in old_inference and "model" not in inference_service:
-            inference_service["model"] = old_inference["served_model_name"]
-            migrations_applied.append(
-                "resource.inference.served_model_name → inference_service.model"
-            )
+        # Copy served_model_name to model if missing or if it's an interpolation string
+        if "served_model_name" in old_inference:
+            existing_model = inference_service.get("model", "")
+            is_interpolation = isinstance(existing_model, str) and "${" in existing_model
+            if not existing_model or is_interpolation:
+                inference_service["model"] = old_inference["served_model_name"]
+                migrations_applied.append(
+                    "resource.inference.served_model_name → inference_service.model"
+                )
 
-        if "model_path" in old_inference and "model_path" not in inference_service:
-            inference_service["model_path"] = old_inference["model_path"]
-            migrations_applied.append(
-                "resource.inference.model_path → inference_service.model_path"
-            )
+        # Copy model_path if missing or if it's an interpolation string
+        if "model_path" in old_inference:
+            existing_path = inference_service.get("model_path", "")
+            is_interpolation = isinstance(existing_path, str) and "${" in existing_path
+            if not existing_path or is_interpolation:
+                inference_service["model_path"] = old_inference["model_path"]
+                migrations_applied.append(
+                    "resource.inference.model_path → inference_service.model_path"
+                )
 
         if "resource" not in inference_service:
             inference_service["resource"] = {}

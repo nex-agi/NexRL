@@ -49,7 +49,6 @@ from .trajectory_pool import TrajectoryPool
 from .utils.config_utils import (
     get_actor_train_service_config,
     insert_config,
-    migrate_legacy_config,
     use_tinker,
     use_weaver,
 )
@@ -112,10 +111,6 @@ class NexRLController:
         set_logging_basic_config()
 
         seed_everything(config.data.seed)
-
-        # Apply backward compatibility migrations FIRST, before any config usage
-        # To remove backward compatibility in v3.0: delete this function call
-        migrate_legacy_config(config)
 
         self._config = config
 

@@ -197,6 +197,9 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
 
     from omegaconf import OmegaConf  # pylint: disable=reimported,redefined-outer-name,unused-import
 
+    # Disable struct mode globally to allow adding new keys
+    OmegaConf.set_struct(config, False)
+
     migrations_applied = []
 
     # ============================================================================
@@ -237,7 +240,7 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
     # 3. Migrate model_tag → identifier (train_service)
     # ============================================================================
     for service_name, service_config in train_service.items():
-        if not isinstance(service_config, dict):
+        if not (isinstance(service_config, dict) or OmegaConf.is_dict(service_config)):
             continue
         if "model_tag" in service_config and "identifier" not in service_config:
             service_config["identifier"] = service_config["model_tag"]
@@ -246,7 +249,9 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
     # ============================================================================
     # 4. Add missing role field (default to actor if single service)
     # ============================================================================
-    service_names = [k for k, v in train_service.items() if isinstance(v, dict)]
+    service_names = [
+        k for k, v in train_service.items() if isinstance(v, dict) or OmegaConf.is_dict(v)
+    ]
     services_with_role = [k for k in service_names if train_service[k].get("role")]
 
     if len(service_names) == 1 and len(services_with_role) == 0:
@@ -257,38 +262,75 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
     # ============================================================================
     # 5. Migrate resource.train → train_service.*.resource
     # ============================================================================
-    old_train_resources = (config.get("resource") or {}).get("train")
-    if old_train_resources and isinstance(old_train_resources, dict):
-        for service_name, service_config in train_service.items():
-            if not isinstance(service_config, dict):
-                continue
+    old_train_resources = config.get("resource", {}).get("train") if "resource" in config else None
+    logger.info(f"[DEBUG] old_train_resources: {old_train_resources}")
+    logger.info(f"[DEBUG] old_train_resources type: {type(old_train_resources)}")
+    logger.info(f"[DEBUG] train_service keys: {list(train_service.keys())}")
 
+    if old_train_resources and (
+        isinstance(old_train_resources, dict) or OmegaConf.is_dict(old_train_resources)
+    ):
+        train_service_items = [
+            (k, v) for k, v in train_service.items() if isinstance(v, dict) or OmegaConf.is_dict(v)
+        ]
+        logger.info(f"[DEBUG] train_service_items: {[name for name, _ in train_service_items]}")
+
+        for service_name, service_config in train_service_items:
             # Get identifier from service config
             service_identifier = service_config.get("identifier")
+            logger.info(
+                f"[DEBUG] Processing service '{service_name}' with identifier '{service_identifier}'"
+            )
+            resource_spec = None
+            resource_key = None
 
-            # Find matching resource config
+            # Try exact match first
             if service_identifier and service_identifier in old_train_resources:
+                resource_key = service_identifier
                 resource_spec = old_train_resources[service_identifier]
-                if isinstance(resource_spec, dict):
-                    # Ensure resource section exists
-                    if "resource" not in service_config:
-                        service_config["resource"] = {}
+                logger.info(f"[DEBUG] Exact match found for '{service_identifier}'")
+            # Fallback: if only one train service and only one resource entry, use it
+            elif len(train_service_items) == 1 and len(old_train_resources) == 1:
+                resource_key = next(iter(old_train_resources))
+                resource_spec = old_train_resources[resource_key]
+                logger.info(
+                    f"[DEBUG] Fallback match: using '{resource_key}' for service '{service_name}'"
+                )
+            # Multiple entries with no match - error
+            elif len(train_service_items) > 1 or len(old_train_resources) > 1:
+                raise ValueError(
+                    f"Cannot auto-migrate resource.train: identifier mismatch. "
+                    f"Service '{service_name}' has identifier '{service_identifier}', "
+                    f"but resource.train has keys: {list(old_train_resources.keys())}. "
+                    f"Please manually update identifiers to match."
+                )
 
-                    # Copy resource fields that don't already exist
-                    for key, value in resource_spec.items():
-                        if key not in service_config["resource"]:
-                            service_config["resource"][key] = value
+            if resource_spec and (
+                isinstance(resource_spec, dict) or OmegaConf.is_dict(resource_spec)
+            ):
+                logger.info(f"[DEBUG] Adding resource to service '{service_name}': {resource_spec}")
+                # Ensure resource section exists
+                if "resource" not in service_config:
+                    service_config["resource"] = {}
 
-                    migrations_applied.append(
-                        f"resource.train.{service_identifier} → "
-                        f"train_service.{service_name}.resource"
-                    )
+                # Copy resource fields that don't already exist
+                for key, value in resource_spec.items():
+                    if key not in service_config["resource"]:
+                        service_config["resource"][key] = value
+
+                migrations_applied.append(
+                    f"resource.train.{resource_key} → " f"train_service.{service_name}.resource"
+                )
+            else:
+                logger.info(f"[DEBUG] No resource_spec found for service '{service_name}'")
 
     # ============================================================================
     # 6. Migrate resource.inference → inference_service.resource
     # ============================================================================
     old_inference_resource = (config.get("resource") or {}).get("inference")
-    if old_inference_resource and isinstance(old_inference_resource, dict):
+    if old_inference_resource and (
+        isinstance(old_inference_resource, dict) or OmegaConf.is_dict(old_inference_resource)
+    ):
         # Migrate model/path fields
         if "served_model_name" in old_inference_resource:
             if "model" not in inference_service:
@@ -321,7 +363,9 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
     # 7. Migrate resource.agent → rollout_worker.resource
     # ============================================================================
     old_agent_resource = (config.get("resource") or {}).get("agent")
-    if old_agent_resource and isinstance(old_agent_resource, dict):
+    if old_agent_resource and (
+        isinstance(old_agent_resource, dict) or OmegaConf.is_dict(old_agent_resource)
+    ):
         if "rollout_worker" not in config:
             config["rollout_worker"] = {}
 
@@ -336,6 +380,12 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
                     migrations_applied.append(
                         f"resource.agent.{field} → rollout_worker.resource.{field}"
                     )
+
+    # ============================================================================
+    # Note: We keep struct mode disabled after migration because the dynamically
+    # added keys (identifier, role, resource, etc.) are not part of the original
+    # YAML schema. Re-enabling struct mode would prevent access to these keys.
+    # ============================================================================
 
     # ============================================================================
     # Log all migrations

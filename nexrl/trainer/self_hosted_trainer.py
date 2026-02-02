@@ -65,6 +65,8 @@ class SelfHostedTrainer(BaseTrainer):
             raise ValueError("train_service must be specified")
         self._actor_train_service_config = get_train_service_config_by_role(train_service, "actor")
 
+        logger.info(f"self._actor_train_service_config: {self._actor_train_service_config}")
+
         # Train service client (using actor train service)
         self._train_service_client = create_train_service_client(
             self._actor_train_service_config.backend,

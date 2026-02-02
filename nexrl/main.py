@@ -19,6 +19,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from .controller import NexRLController
+from .utils.config_utils import migrate_legacy_config
 from .utils.logging_utils import set_logging_basic_config
 from .utils.validate_config import validate_config
 
@@ -30,9 +31,11 @@ def main_task(config: DictConfig):
     # Print initial config for debugging
     from pprint import pprint
 
+    OmegaConf.resolve(config)
+    migrate_legacy_config(config)
+
     logger.info("Starting NexRL with configuration:")
     pprint(OmegaConf.to_container(config, resolve=True))
-    OmegaConf.resolve(config)
     controller = NexRLController(config)
     controller.run()
 

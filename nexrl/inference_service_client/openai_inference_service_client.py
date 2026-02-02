@@ -168,7 +168,6 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
                 tokenize=tokenize,
                 tools=tools,
             )
-            logger.info("success apply_chat_template")
             return token_ids
         except Exception as e:
             logger.error(f"Error in apply_chat_template: {e}")
