@@ -21,12 +21,14 @@ from .remote_api_cross_entropy_trainer import RemoteApiCrossEntropyTrainer
 from .remote_api_grpo_trainer import RemoteApiGrpoTrainer
 from .remote_api_trainer import RemoteApiTrainer
 from .self_hosted_grpo_trainer import SelfHostedGrpoTrainer
+from .self_hosted_opd_trainer import SelfHostedOpdTrainer
 from .self_hosted_trainer import SelfHostedTrainer
 
 __all__ = [
     "BaseTrainer",
     "SelfHostedTrainer",
     "SelfHostedGrpoTrainer",
+    "SelfHostedOpdTrainer",
     "RemoteApiTrainer",
     "RemoteApiGrpoTrainer",
     "RemoteApiCrossEntropyTrainer",

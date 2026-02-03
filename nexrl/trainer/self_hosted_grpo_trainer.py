@@ -250,8 +250,6 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
 
         order_ids = batch.values.get("task_id", None)
 
-        logger.info(f"order_ids: {order_ids}")
-
         def _to_py(v: Any) -> Any:
             if hasattr(v, "item"):
                 try:

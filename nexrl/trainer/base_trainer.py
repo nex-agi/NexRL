@@ -27,6 +27,7 @@ from omegaconf import DictConfig
 from ..base_module import NexRLModule
 from ..executor import execute
 from ..nexrl_types import Trajectory
+from ..utils.config_utils import get_train_service_config_by_role
 
 if TYPE_CHECKING:
     from ..trajectory_pool import TrajectoryPool
@@ -64,7 +65,38 @@ class BaseTrainer(NexRLModule):
         self._trajectory_pool: "TrajectoryPool" = None  # type: ignore
         self._weight_sync_controller: "WeightSyncController" = None  # type: ignore
 
-        self._model_tag = "default"  # TODO: should be configurable  # pylint: disable=fixme
+        # Get the actor train service identifier for weight sync coordination
+        # Support both old 'model_tag' and new 'identifier' fields
+        train_service = config.get("train_service")
+        if train_service:
+            try:
+                actor_train_service = get_train_service_config_by_role(train_service, "actor")
+                identifier = actor_train_service.get("identifier")
+                model_tag = actor_train_service.get("model_tag")
+
+                if identifier is None and model_tag is not None:
+                    import warnings
+
+                    warnings.warn(
+                        "Using deprecated 'model_tag' field in train_service. "
+                        "Please rename to 'identifier'. "
+                        "See migration guide in docs/developer-guide/09-recipes/.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    self._identifier = model_tag
+                else:
+                    self._identifier = identifier or "default"
+            except ValueError:
+                # Fallback if no actor role found
+                identifier = config.get("identifier")
+                model_tag = config.get("model_tag")
+                self._identifier = identifier or model_tag or "default"
+        else:
+            identifier = config.get("identifier")
+            model_tag = config.get("model_tag")
+            self._identifier = identifier or model_tag or "default"
+        logger.info(f"Trainer using identifier: {self._identifier}")
 
         # Timing tracking
         self._batch_count: int = 0
@@ -149,10 +181,11 @@ class BaseTrainer(NexRLModule):
             self._activity_tracker.set_training_step(self._train_step)
 
             # Notify weight sync controller of training completion
+            # identifier serves as model_tag for weight sync coordination
             execute(
                 self._weight_sync_controller.train_worker_notify_weight_update,
                 worker_name=self._module_name,
-                model_tag=self._model_tag,
+                model_tag=self._identifier,
             )
 
             self._batch_count += 1

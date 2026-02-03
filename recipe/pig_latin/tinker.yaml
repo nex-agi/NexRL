@@ -49,7 +49,7 @@ weight:
 
 service:
   inference_service:
-    model_tag: "default"
+    identifier: "default"
     model: "Qwen/Qwen3-8B"
     max_tokens: ${data.max_response_length}
     tokenizer: null
@@ -65,13 +65,15 @@ service:
     api_key: "${oc.env:TINKER_API_KEY}"
 
   train_service:
-    model_tag: "default"
-    backend: tinker
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: tinker
 
-    config:
-      # Cross entropy loss for supervised learning
-      loss_fn: "cross_entropy"
-      learning_rate: 1e-4
-      beta1: 0.9
-      beta2: 0.95
-      eps: 1e-8
+      config:
+        # Cross entropy loss for supervised learning
+        loss_fn: "cross_entropy"
+        learning_rate: 1e-4
+        beta1: 0.9
+        beta2: 0.95
+        eps: 1e-8

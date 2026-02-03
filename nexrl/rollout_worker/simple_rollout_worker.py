@@ -69,6 +69,9 @@ class SimpleRolloutWorker(BaseRolloutWorker):
         # Calculate reward: 1.0 if answer matches ground_truth, else 0.0
         reward = 1.0 if extracted_answer == ground_truth else 0.0
 
+        # identifier serves as model_tag for trajectory routing
+        identifier = self._config.inference_service.get("identifier", "default")
+
         # Create Trajectory dataclass
         trajectory = Trajectory(
             tokens=tokens,
@@ -83,6 +86,7 @@ class SimpleRolloutWorker(BaseRolloutWorker):
                 "task_id": task.get("task_id", 0),
                 "temperature": self._config.temperature,
                 "finish_reason": completion_result.get("finish_reason", "stop"),
+                "model_tag": identifier,
                 # Logprobs field (0.0 for prompt, actual logprobs for response)
                 "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
                 # Additional fields for debugging

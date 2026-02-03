@@ -13,6 +13,17 @@ HTTPTrainServiceClient  MockTrainServiceClient
   (NexTrainer backend)    (Testing only)
 ```
 
+## Multi-Service Support
+
+NexRL supports multiple train services for advanced training methods:
+- **On-Policy Distillation (OPD)**: Student + Teacher services
+- **Multi-model training**: Multiple student models
+
+Each service is identified by:
+- **Name**: Service name in configuration (e.g., `student_service`, `teacher_service`)
+- **Role**: Service role (`actor`, `teacher`)
+- **Identifier**: Unique identifier for the service group
+
 ## TrainServiceClient
 
 Abstract base class for training service clients. Located in `nexrl/train_service_client.py`.
@@ -218,23 +229,52 @@ This format is created by `Batch.to_nextrainer_batch()` in self-hosted trainers.
 
 ## Configuration
 
-Training service configuration in recipe YAML:
+### Single Service (Standard Training)
 
 ```yaml
-trainer:
+service:
   train_service:
-    backend: "self-hosted"
-    url: "http://localhost:5000"
-    identifier: "nexrl0"  # Optional worker group ID
-    world_size: 8  # Number of GPUs
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        # Training hyperparameters
+        model:
+          path: "/path/to/model"
+        optim:
+          lr: 2e-6
+```
 
-    # Training hyperparameters (passed to workers)
-    config:
-      learning_rate: 2e-6
-      beta1: 0.9
-      beta2: 0.95
-      eps: 1e-8
-      max_grad_norm: 1.0
+### Multiple Services (OPD)
+
+```yaml
+service:
+  train_service:
+    student_service:
+      identifier: "student"
+      role: "actor"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/student"
+
+    teacher_service:
+      identifier: "teacher"
+      role: "teacher"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/teacher"
 ```
 
 ## Client Creation

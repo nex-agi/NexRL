@@ -456,6 +456,7 @@ class WorkerZMQCoordinator:
                     elif operation in [
                         "compute_log_prob",
                         "update_actor",
+                        "update_actor_with_distillation",
                         "generate_sequences",
                         "compute_ref_log_prob",
                     ]:
@@ -488,6 +489,7 @@ class WorkerZMQCoordinator:
                     if operation in [
                         "compute_log_prob",
                         "update_actor",
+                        "update_actor_with_distillation",
                         "generate_sequences",
                         "compute_ref_log_prob",
                     ]:
@@ -813,6 +815,10 @@ class WorkerZMQCoordinator:
             if not hasattr(worker, "_is_actor") or not worker._is_actor:
                 raise RuntimeError("Worker is not configured as actor")
             return worker.update_actor(data_proto)
+        elif operation == "update_actor_with_distillation":
+            if not hasattr(worker, "_is_actor") or not worker._is_actor:
+                raise RuntimeError("Worker is not configured as actor")
+            return worker.update_actor_with_distillation(data_proto)
         elif operation == "compute_ref_log_prob":
             if not hasattr(worker, "_is_ref") or not worker._is_ref:
                 raise RuntimeError("Worker is not configured as reference")

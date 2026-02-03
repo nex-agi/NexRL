@@ -25,6 +25,7 @@ from omegaconf import DictConfig
 
 from ..nexrl_types import Trajectory
 from ..tinker.tinker_service_holder import TinkerServiceHolder
+from ..utils.config_utils import get_train_service_config_by_role
 from ..utils.data_dumper import DataDumper, get_data_dumper
 from ..utils.finetune_service_utils import convert_trajectories_to_datums
 from ..utils.logging_utils import log_rollout_metrics
@@ -65,8 +66,13 @@ class RemoteApiTrainer(BaseTrainer):
         # Service holder will be set via set_service_holder() in derived class
         self._service_holder = None
 
+        train_service = config.get("train_service")
+        if not train_service:
+            raise ValueError("train_service must be specified")
+        actor_train_service_config = get_train_service_config_by_role(train_service, "actor")
+
         # Training hyperparameters from config
-        train_config = config.get("train_service", {}).get("config", {})
+        train_config = actor_train_service_config.get("config", {})
         self._loss_fn = train_config.get("loss_fn", "importance_sampling")
         self._learning_rate = train_config.get("learning_rate", 2e-6)
         self._beta1 = train_config.get("beta1", 0.9)

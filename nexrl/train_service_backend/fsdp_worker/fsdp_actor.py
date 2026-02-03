@@ -20,7 +20,7 @@ import itertools
 import os
 import re
 from functools import partial
-from typing import Iterable, Tuple
+from typing import Any, Iterable, Tuple
 
 import torch
 from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
@@ -328,6 +328,317 @@ class DataParallelPPOActor:
             log_probs = log_probs[revert_indices]
 
         return log_probs
+
+    def update_policy_with_distillation(self, data: DataProto):
+        """Update student policy using reverse KL divergence loss for on-policy distillation.
+
+        This method implements the on-policy distillation algorithm where:
+        1. Student model generates trajectories (passed in via data)
+        2. Teacher model provides log probabilities for those trajectories (passed in via data)
+        3. We minimize reverse KL: KL(student || teacher) using those trajectories
+
+        Reference: https://thinkingmachines.ai/blog/on-policy-distillation/
+
+        OPTIMIZED VERSION: Uses log probabilities instead of full logits for ~40,000x memory savings!
+
+        CLIPPING SUPPORT: Optionally supports PPO-like clipping mechanism for more stable training.
+
+        Args:
+            data (DataProto): a DataProto containing keys
+                ``input_ids``: Student-generated input_ids
+                ``attention_mask``: Attention mask
+                ``position_ids``: Position ids
+                ``responses``: Student-generated responses
+                ``teacher_log_probs``: Teacher log probabilities for the student trajectories [batch, seq_len]
+                ``old_student_log_probs``: (optional) Old student log probs for clipping [batch, seq_len]
+
+        Returns:
+            metrics: Dictionary containing training metrics
+        """
+        print(
+            f"[update_policy_with_distillation] Starting distillation update (OPTIMIZED - using logprobs)"
+        )
+        # Set to training mode
+        self.actor_module.train()
+
+        print(f"[update_policy_with_distillation] meta_info: {data.meta_info}")
+        # Get configuration from meta_info
+        temperature = data.meta_info.get("temperature", 1.0)
+        distillation_coeff = data.meta_info.get("distillation_coeff", 1.0)
+        entropy_coeff = data.meta_info.get("entropy_coeff", 0.00)
+        loss_agg_mode = data.meta_info.get("loss_agg_mode", "token-mean")
+
+        # Clipping configuration
+
+        use_clipping = self.config.get("use_distillation_clipping", False)
+        cliprange = self.config.get("distillation_cliprange", 0.2)
+        cliprange_low = self.config.get("distillation_cliprange_low", 0.2)
+        cliprange_high = self.config.get("distillation_cliprange_high", 0.2)
+        do_old_student_log_prob_compute = self.config.get("do_old_student_log_prob_compute", False)
+
+        # Token range configuration for selective training
+        train_token_start_pct = self.config.get("train_token_start_pct", 0.0)
+        train_token_end_pct = self.config.get("train_token_end_pct", 1.0)
+
+        # Advantage-based selection configuration
+        advantage_start_pct = self.config.get("advantage_start_pct", 0.0)
+        advantage_end_pct = self.config.get("advantage_end_pct", 1.0)
+
+        # Entropy-based selection configuration
+        entropy_start_pct = self.config.get("entropy_start_pct", 0.0)
+        entropy_end_pct = self.config.get("entropy_end_pct", 1.0)
+
+        print(
+            f"[update_policy_with_distillation] Config: temperature={temperature}, distillation_coeff={distillation_coeff}, "
+            f"use_clipping={use_clipping}, cliprange={cliprange}, "
+            f"train_token_range=[{train_token_start_pct:.2f}, {train_token_end_pct:.2f}], "
+            f"advantage_range=[{advantage_start_pct:.2f}, {advantage_end_pct:.2f}], "
+            f"entropy_range=[{entropy_start_pct:.2f}, {entropy_end_pct:.2f}]"
+        )
+
+        # Select keys needed for distillation - using teacher_log_probs instead of teacher_logits
+        select_keys = [
+            "responses",
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "teacher_log_probs",
+        ]
+
+        # If using clipping, we need old_student_log_probs
+        if use_clipping and do_old_student_log_prob_compute:
+            select_keys.append("old_student_log_probs")
+
+        batch = data.select(batch_keys=select_keys).batch
+
+        # Split to make minibatch iterator
+        ppo_mini_batch_size = self.config.ppo_mini_batch_size
+        ppo_epochs = self.config.get("distillation_epochs", self.config.ppo_epochs)
+
+        dataloader = batch.split(ppo_mini_batch_size)
+
+        metrics: dict[str, Any] = {}
+        for epoch in range(ppo_epochs):
+            dataloader = batch.split(ppo_mini_batch_size)
+            for batch_idx, mini_batch in enumerate(dataloader):
+                # Split batch into micro_batches
+                if self.config.use_dynamic_bsz:
+                    max_token_len = (
+                        self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                    )
+                    micro_batches, _ = rearrange_micro_batches(
+                        batch=mini_batch, max_token_len=max_token_len
+                    )
+                else:
+                    gradient_accumulation = (
+                        ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
+                    )
+                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+
+                self.actor_optimizer.zero_grad()
+
+                for micro_batch_data in micro_batches:
+                    micro_batch_data = micro_batch_data.cuda()
+                    responses = micro_batch_data["responses"]
+                    response_length = responses.size(1)
+                    response_mask = micro_batch_data["attention_mask"][:, -response_length:]
+                    teacher_log_probs = micro_batch_data[
+                        "teacher_log_probs"
+                    ]  # [batch, response_length]
+
+                    print(
+                        f"[update_policy_with_distillation] Processing micro_batch, batch_size={responses.shape[0]}, response_length={response_length}"
+                    )
+
+                    # Get student log probabilities for the same sequences
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        input_ids = micro_batch_data["input_ids"]
+                        batch_size_local, seqlen = input_ids.shape
+                        attention_mask = micro_batch_data["attention_mask"]
+                        position_ids = micro_batch_data["position_ids"]
+
+                        if self.use_remove_padding:
+                            input_ids_rmpad, indices, *_ = unpad_input(
+                                input_ids.unsqueeze(-1), attention_mask
+                            )
+                            input_ids_rmpad = input_ids_rmpad.transpose(0, 1)
+
+                            position_ids_rmpad = index_first_axis(
+                                rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."),
+                                indices,
+                            ).transpose(0, 1)
+
+                            if self.use_ulysses_sp:
+                                input_ids_rmpad, position_ids_rmpad, pad_size = (
+                                    ulysses_pad_and_slice_inputs(
+                                        input_ids_rmpad,
+                                        position_ids_rmpad,
+                                        sp_size=self.ulysses_sequence_parallel_size,
+                                    )
+                                )
+
+                            output = self.actor_module(
+                                input_ids=input_ids_rmpad,
+                                attention_mask=None,
+                                position_ids=position_ids_rmpad,
+                                use_cache=False,
+                            )
+                            logits_rmpad = output.logits.squeeze(0)
+                            logits_rmpad.div_(temperature)
+
+                            # Compute entropy
+                            entropy_rmpad = self.compute_entropy_from_logits(logits_rmpad)
+
+                            if self.use_ulysses_sp:
+                                logits_rmpad = gather_outpus_and_unpad(
+                                    logits_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                                )
+                                entropy_rmpad = gather_outpus_and_unpad(
+                                    entropy_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                                )
+
+                            # Pad back to (bsz, seqlen, vocab_size)
+                            full_logits = pad_input(
+                                hidden_states=logits_rmpad,
+                                indices=indices,
+                                batch=batch_size_local,
+                                seqlen=seqlen,
+                            )
+                            full_entropy = pad_input(
+                                hidden_states=entropy_rmpad.unsqueeze(-1),
+                                indices=indices,
+                                batch=batch_size_local,
+                                seqlen=seqlen,
+                            )
+
+                            # Extract logits for response tokens
+                            response_logits = full_logits[:, -response_length - 1 : -1, :]
+                            entropy = full_entropy.squeeze(-1)[:, -response_length - 1 : -1]
+
+                            # Compute log probabilities for the sampled tokens (OPTIMIZED VERSION)
+                            import torch.nn.functional as F
+
+                            response_log_probs = F.log_softmax(response_logits, dim=-1)
+                            # Gather log probs for the actual sampled tokens
+                            student_log_probs = torch.gather(
+                                response_log_probs, dim=-1, index=responses.unsqueeze(-1)
+                            ).squeeze(-1)
+                        else:
+                            output = self.actor_module(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                position_ids=position_ids,
+                                use_cache=False,
+                            )
+                            logits = output.logits
+                            logits.div_(temperature)
+                            response_logits = logits[:, -response_length - 1 : -1, :]
+                            entropy = nx_utils.entropy_from_logits(response_logits)
+
+                            # Compute log probabilities for the sampled tokens (OPTIMIZED VERSION)
+                            import torch.nn.functional as F
+
+                            response_log_probs = F.log_softmax(response_logits, dim=-1)
+                            # Gather log probs for the actual sampled tokens
+                            student_log_probs = torch.gather(
+                                response_log_probs, dim=-1, index=responses.unsqueeze(-1)
+                            ).squeeze(-1)
+
+                    # Get or compute old_student_log_probs for clipping
+                    if use_clipping:
+                        print(
+                            "===================================================================================="
+                        )
+                        print(f"do_old_student_log_prob_compute: {do_old_student_log_prob_compute}")
+                        if do_old_student_log_prob_compute:
+                            # Use provided old_student_log_probs from data
+                            old_student_log_probs = micro_batch_data["old_student_log_probs"]
+
+                            print(f"old_student_log_probs: {old_student_log_probs}")
+                            print(
+                                "===================================================================================="
+                            )
+                        else:
+                            print(f"no old_student_log_probs")
+                            print(
+                                "===================================================================================="
+                            )
+                            # Use current student_log_probs as old (first iteration behavior)
+                            old_student_log_probs = student_log_probs.clone().detach()
+
+                    # Compute reverse KL loss (with or without clipping)
+                    if use_clipping:
+                        # Reverse KL with PPO-like clipping
+                        reverse_kl_loss, distill_metrics = (
+                            core_algos.compute_reverse_kl_loss_with_clip(
+                                student_log_probs=student_log_probs,
+                                old_student_log_probs=old_student_log_probs,
+                                teacher_log_probs=teacher_log_probs,
+                                response_mask=response_mask,
+                                cliprange=cliprange,
+                                cliprange_low=cliprange_low,
+                                cliprange_high=cliprange_high,
+                                loss_agg_mode=loss_agg_mode,
+                                train_token_start_pct=train_token_start_pct,
+                                train_token_end_pct=train_token_end_pct,
+                                advantage_start_pct=advantage_start_pct,
+                                advantage_end_pct=advantage_end_pct,
+                                student_entropy=entropy,
+                                entropy_start_pct=entropy_start_pct,
+                                entropy_end_pct=entropy_end_pct,
+                            )
+                        )
+                    else:
+                        # Standard reverse KL loss (OPTIMIZED VERSION - using log_probs)
+                        reverse_kl_loss, distill_metrics = core_algos.compute_reverse_kl_loss(
+                            student_log_probs=student_log_probs,
+                            teacher_log_probs=teacher_log_probs,
+                            response_mask=response_mask,
+                            loss_agg_mode=loss_agg_mode,
+                            train_token_start_pct=train_token_start_pct,
+                            train_token_end_pct=train_token_end_pct,
+                            advantage_start_pct=advantage_start_pct,
+                            advantage_end_pct=advantage_end_pct,
+                            student_entropy=entropy,
+                            entropy_start_pct=entropy_start_pct,
+                            entropy_end_pct=entropy_end_pct,
+                        )
+
+                    # Compute entropy loss
+                    entropy_loss = masked_mean(entropy, response_mask)
+
+                    # Total loss
+                    total_loss = distillation_coeff * reverse_kl_loss - entropy_coeff * entropy_loss
+
+                    if self.config.use_dynamic_bsz:
+                        loss = total_loss * (len(micro_batch_data) / ppo_mini_batch_size)
+                    else:
+                        loss = total_loss / gradient_accumulation
+
+                    loss.backward()
+
+                    print(
+                        f"[update_policy_with_distillation] Loss computed: total={total_loss.item():.4f}, reverse_kl={reverse_kl_loss.item():.4f}, entropy={entropy_loss.item():.4f}"
+                    )
+
+                    # Collect metrics
+                    loss_data = {
+                        "distill/total_loss": total_loss.detach().item(),
+                        "distill/reverse_kl_loss": reverse_kl_loss.detach().item(),
+                        "distill/entropy_loss": entropy_loss.detach().item(),
+                        "distill/distillation_coeff": distillation_coeff,
+                        "distill/entropy_coeff": entropy_coeff,
+                    }
+                    loss_data.update(distill_metrics)
+                    append_to_dict(metrics, loss_data)
+
+                grad_norm = self._optimizer_step()
+                grad_data = {"distill/grad_norm": grad_norm.detach().item()}
+                append_to_dict(metrics, grad_data)
+
+        self.actor_optimizer.zero_grad()
+        print(f"[update_policy_with_distillation] Completed {ppo_epochs} epochs")
+        return metrics
 
     def update_policy(self, data: DataProto):
         # make sure we are in training mode

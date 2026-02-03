@@ -79,7 +79,23 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         """
         super().__init__()
         self._config = config
-        self._model_tag = config.inference_service.get("model_tag", "default")
+        # identifier serves as model_tag for weight sync coordination
+        # Support both old 'model_tag' and new 'identifier' fields
+        identifier = config.inference_service.get("identifier")
+        model_tag = config.inference_service.get("model_tag")
+
+        if identifier is None and model_tag is not None:
+            import warnings
+
+            warnings.warn(
+                "The 'model_tag' field is deprecated. Please use 'identifier' instead. "
+                "See migration guide in docs/developer-guide/09-recipes/.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._identifier = model_tag
+        else:
+            self._identifier = identifier or "default"
         self._freeze_for_weight_sync = config.inference_service.get("freeze_for_weight_sync", True)
         self._parse_tool_call_arguments = config.inference_service.get(
             "parse_tool_call_arguments", False
@@ -152,7 +168,6 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
                 tokenize=tokenize,
                 tools=tools,
             )
-            logger.info("success apply_chat_template")
             return token_ids
         except Exception as e:
             logger.error(f"Error in apply_chat_template: {e}")

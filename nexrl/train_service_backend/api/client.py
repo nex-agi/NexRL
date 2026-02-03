@@ -161,8 +161,10 @@ class HTTPTrainServiceClient(TrainServiceClient):
             request_data["zmq_base_port"] = zmq_base_port
         if dispatch_mode:
             request_data["dispatch_mode"] = dispatch_mode
-
-        response = self.session.post(f"{self.base_url}/initialize", json=request_data)
+        params = {"identifier": self.identifier} if self.identifier else {}
+        response = self.session.post(
+            f"{self.base_url}/initialize", json=request_data, params=params
+        )
         response.raise_for_status()
         return response.json()
 
@@ -186,6 +188,28 @@ class HTTPTrainServiceClient(TrainServiceClient):
         params = {"identifier": self.identifier} if self.identifier else {}
         response = self.session.post(
             f"{self.base_url}/update_actor", json=request_data, params=params
+        )
+        response.raise_for_status()
+        ret = self._process_data_proto_response(response.json())
+        ret["meta_info"] = restore_payload(ret["meta_info"], rejected_metadata)
+        return ret
+
+    def update_actor_with_distillation(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Update actor using on-policy distillation
+
+        Args:
+            data: Data to send to workers (should include teacher_logits)
+
+        Returns:
+            dict containing training metrics
+        """
+        request_data = self._prepare_data_proto_request(data)
+        serializable_metadata, rejected_metadata = split_for_requests(request_data["meta_info"])
+        request_data["meta_info"] = serializable_metadata
+
+        params = {"identifier": self.identifier} if self.identifier else {}
+        response = self.session.post(
+            f"{self.base_url}/update_actor_with_distillation", json=request_data, params=params
         )
         response.raise_for_status()
         ret = self._process_data_proto_response(response.json())

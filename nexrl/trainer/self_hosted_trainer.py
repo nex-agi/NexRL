@@ -28,6 +28,7 @@ from omegaconf import DictConfig
 
 from ..inference_service_client import hf_tokenizer
 from ..nexrl_types import Batch, Trajectory
+from ..utils.config_utils import get_train_service_config_by_role
 from ..utils.data_dumper import get_data_dumper
 from ..utils.init_utils import create_train_service_client
 from ..utils.torch_functional import compute_position_id_with_mask, padding_data
@@ -58,15 +59,30 @@ class SelfHostedTrainer(BaseTrainer):
         """
         super().__init__(config)
 
-        # Train service client
+        # Get the actor train service config
+        train_service = config.get("train_service")
+        if not train_service:
+            raise ValueError("train_service must be specified")
+        self._actor_train_service_config = get_train_service_config_by_role(train_service, "actor")
+
+        logger.info(f"self._actor_train_service_config: {self._actor_train_service_config}")
+
+        # Train service client (using actor train service)
         self._train_service_client = create_train_service_client(
-            config.train_service.backend,
-            config.train_service.url,
-            config.train_service.get("identifier", None),
+            self._actor_train_service_config.backend,
+            self._actor_train_service_config.url,
+            self._actor_train_service_config.get("identifier", None),
         )
-        self.world_size = config.train_service.get("world_size", None)
-        if self.world_size is None:
-            raise ValueError("world_size must be specified in train_service config")
+        node_world_size = self._actor_train_service_config.resource.get("world_size", None)
+        if node_world_size is None:
+            raise ValueError("world_size must be specified in actor train_service.resource config")
+        gpus_per_pod = self._actor_train_service_config.resource.get("gpus_per_pod", None)
+        if gpus_per_pod is None:
+            raise ValueError(
+                "gpus_per_pod must be specified in actor train_service.resource config"
+            )
+        self.world_size = int(node_world_size * gpus_per_pod)
+        logger.info(f"SelfHostedTrainer [actor] initialized with world size: {self.world_size}")
 
         # Initialize tokenizer for trajectory processing
         tokenizer_path = config.algorithm.inference_service.get(
@@ -103,15 +119,15 @@ class SelfHostedTrainer(BaseTrainer):
         Initialize the train service backend workers.
         This should be called before starting training.
         """
-        backend = self._config.train_service.backend
+        backend = self._actor_train_service_config.backend
 
         if backend in ("nextrainer", "http"):
             logger.info("Initializing self-hosted workers with final config...")
             try:
                 from omegaconf import OmegaConf
 
-                train_service_config = self._config.train_service
-                config_dict = OmegaConf.to_container(train_service_config, resolve=True)
+                # Use the actor train service config
+                config_dict = OmegaConf.to_container(self._actor_train_service_config, resolve=True)
 
                 # Merge debug config into actor config for DataDumper initialization
                 # NOTE: self._config is a sub-config (config.trainer), so we need to check
@@ -143,8 +159,9 @@ class SelfHostedTrainer(BaseTrainer):
                 except Exception as e:
                     logger.error(f"Failed to initialize workers: {e}")
                     experiment_path = os.environ.get("EXPERIMENT_PATH", "EXPERIMENT_PATH")
+                    identifier = self._config.train_service.get("identifier", "default")
                     api_server_log = f"{experiment_path}/api_server.log"
-                    workers_log = f"{experiment_path}/workers.log"
+                    workers_log = f"{experiment_path}/workers-{identifier}-rank*.log"
                     logger.error(
                         f"Please check **{api_server_log}** and **{workers_log}** for more detailed error information."
                     )
@@ -216,7 +233,8 @@ class SelfHostedTrainer(BaseTrainer):
         trajectories = self._process_trajectories(trajectories)
 
         # Step 2: Convert trajectories to batch
-        batch = Batch.from_trajectories(trajectories, model_tag=self._model_tag)
+        # identifier serves as model_tag for batch tracking
+        batch = Batch.from_trajectories(trajectories, model_tag=self._identifier)
         batch = batch.pad_to_world_size(world_size=self.world_size)
 
         # Step 3: Prepare batch (algorithm-specific)

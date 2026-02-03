@@ -25,6 +25,7 @@ from .core_algos import (
     compute_policy_loss,
     compute_policy_loss_impl,
     compute_policy_loss_NX_20250515,
+    compute_reverse_kl_loss,
     kl_penalty,
 )
 from .core_utils import (

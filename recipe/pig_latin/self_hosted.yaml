@@ -24,8 +24,8 @@ experiment_name: "self-hosted-pig_latin"
 #==========================================
 
 data:
-  # Override tokenizer to use resource path
-  tokenizer_path: ${resource.inference.model_path}
+  # Override tokenizer to use model path
+  tokenizer_path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
 
 
 #==========================================
@@ -52,46 +52,37 @@ weight:
 
 service:
   train_service:
-    model_tag: "default"
-    backend: http
-    world_size: 8
-    url: "http://${oc.env:API_SERVER_URL}:8000"
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: http
+      url: "http://${oc.env:API_SERVER_URL}:8000"
 
-    actor:
-      checkpoint_manager: dcp
+      resource:
+        world_size: 1
+        gpus_per_pod: 8
+        memory_per_gpu: 200
 
-      model:
-        path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
-        use_remove_padding: true
+      actor:
+        checkpoint_manager: dcp
 
-      micro_batch_size: 4
-      grad_clip: 1.0
-      loss_agg_mode: token-mean
+        model:
+          path: "${oc.env:NEXRL_MODEL_PATH}/Qwen/Qwen3-8B"
+          use_remove_padding: true
 
-      optim:
-        lr: 1e-4
-        lr_warmup_steps_ratio: 0.1
-        warmup_style: linear
+        micro_batch_size: 4
+        grad_clip: 1.0
+        loss_agg_mode: token-mean
 
-      fsdp_config:
-        wrap_policy:
-          min_num_params: 0
-        param_offload: false
-        grad_offload: false
-        optimizer_offload: false
-        fsdp_size: -1
+        optim:
+          lr: 1e-4
+          lr_warmup_steps_ratio: 0.1
+          warmup_style: linear
 
-#==========================================
-# RESOURCE CONFIGURATION (Self-hosted-specific)
-#==========================================
-
-resource:
-  train:
-    actor-1:
-      world_size: 1
-      gpus_per_pod: 8
-      memory_per_gpu: 200
-
-  agent:
-    num_workers: 0
-    agents_per_worker: 32
+        fsdp_config:
+          wrap_policy:
+            min_num_params: 0
+          param_offload: false
+          grad_offload: false
+          optimizer_offload: false
+          fsdp_size: -1

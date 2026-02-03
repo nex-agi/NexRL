@@ -119,7 +119,7 @@ class PigLatinRolloutWorker(BaseRolloutWorker):
                 "completion": completion,
                 "temperature": self._config.get("temperature", 0.0),
                 "finish_reason": "supervised",  # Mark as supervised learning
-                "model_tag": task.get("model_tag", "default"),
+                "model_tag": self._config.get("identifier", "default"),
             },
         )
 

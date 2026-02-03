@@ -45,7 +45,9 @@ unset https_proxy
 unset http_proxy
 unset all_proxy;
 
-log_path=${EXPERIMENT_PATH}/workers.log
+identifier_label=${IDENTIFIER:-default}
+nrank_label=${RANK:-0}
+log_path=${EXPERIMENT_PATH}/workers-${identifier_label}-nrank${nrank_label}.log
 
 cd $NEXRL_PATH && \
 torchrun --nproc-per-node 8  --node_rank=$RANK --nnodes=${WORLD_SIZE} --master-addr=${MASTER_ADDR} --master-port=${MASTER_PORT}  \

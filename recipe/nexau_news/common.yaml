@@ -89,6 +89,10 @@ rollout_worker:
 
   tokenizer: ${data.tokenizer_path}
 
+  resource:
+    num_workers: 0
+    agents_per_worker: 32
+
 #==========================================
 # TRAJECTORY POOL CONFIGURATION
 #==========================================
@@ -176,12 +180,3 @@ runtime_monitor:
     update_interval: 1.0  # Seconds between progress updates
     log_interval: 10  # Log progress every N updates
     use_tqdm: true  # Use tqdm for progress display
-
-#==========================================
-# COMPUTE RESOURCE CONFIGURATION
-#==========================================
-
-resource:
-  agent:
-    num_workers: 0
-    agents_per_worker: 32

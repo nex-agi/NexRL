@@ -9,7 +9,8 @@ BaseTrainer
     ↓
 SelfHostedTrainer (abstract)
     ↓
-SelfHostedGrpoTrainer
+    ├─ SelfHostedGrpoTrainer
+    └─ SelfHostedOpdTrainer
 ```
 
 ## SelfHostedTrainer
@@ -317,9 +318,87 @@ class MyCustomTrainer(SelfHostedTrainer):
 
 See [Custom Trainers](./custom-trainers.md) for more details.
 
+## SelfHostedOpdTrainer
+
+Implements On-Policy Distillation (OPD) where a student model learns from a teacher model using on-policy trajectories. Located in `nexrl/trainer/self_hosted_opd_trainer.py`.
+
+### Overview
+
+OPD training flow:
+1. Student model generates trajectories (rollout)
+2. Teacher model computes log probabilities for student's sampled tokens
+3. Student is trained to minimize reverse KL: `KL(student || teacher)`
+
+Memory-efficient: Uses log probabilities (~40,000x smaller than full logits).
+
+### Constructor
+
+```python
+def __init__(self, config: DictConfig)
+```
+
+**Requirements:**
+- Two train services with roles: `actor` (student) and `teacher`
+- Each service must have an `identifier`
+
+### Configuration
+
+```yaml
+trainer:
+  type: self_hosted_opd
+  total_train_steps: 100
+  max_prompt_length: 4096
+  max_response_length: 2048
+
+service:
+  train_service:
+    student_service:
+      identifier: "student"
+      role: "actor"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/student"
+        # ... student hyperparameters
+
+    teacher_service:
+      identifier: "teacher"
+      role: "teacher"
+      backend: http
+      url: "http://localhost:8000"
+      resource:
+        world_size: 8
+      actor:
+        model:
+          path: "/path/to/teacher"
+        # ... teacher hyperparameters
+```
+
+### Key Methods
+
+#### _prepare_batch_for_opd()
+
+```python
+def _prepare_batch_for_opd(self, batch: Batch) -> Batch
+```
+
+Prepares batch for OPD training:
+1. Gets teacher log probabilities for student trajectories
+2. Adds teacher log probs to batch for distillation loss
+
+### Multi-Service Support
+
+OPD uses the multi-service train configuration:
+- Gets student config via `get_train_service_config_by_role(train_service, "actor")`
+- Gets teacher config via `get_train_service_config_by_role(train_service, "teacher")`
+- Creates separate clients for student and teacher services
+
 ## Related Documentation
 
 - [Overview](./overview.md) - Trainer architecture overview
-- [GRPO Algorithm](../07-algorithms/grpo.md) - GRPO implementation details
-- [Training Service](../08-services/training-service.md) - NexTrainer backend integration
+- [Training Service](../07-services/training-service.md) - NexTrainer backend integration
 - [Custom Trainers](./custom-trainers.md) - Creating custom algorithm trainers
+- [Service Configuration](../11-configuration-reference/service-config.md) - Multi-service setup
