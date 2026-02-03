@@ -18,7 +18,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "NexRL"
-version = "1.1.0"
+version = "1.2.0"
 description = "An ultra-loosely-coupled LLM post-training framework by Nex-AGI Team"
 requires-python = ">=3.12"
 dependencies = [
@@ -50,7 +50,7 @@ dependencies = [
     "pandas>=2.3.1",
 
     # Weaver & Tinker Integration
-    "nex-weaver>=1.1.0",
+    "nex-weaver>=1.2.0",
     "tinker",
     "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git",
 
