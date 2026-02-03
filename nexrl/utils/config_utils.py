@@ -17,10 +17,39 @@ Configuration utilities for handling OmegaConf DictConfig operations.
 """
 
 import logging
+import os
 
 from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
+
+
+def dump_resolved_config(config: DictConfig) -> None:
+    """
+    Dump the fully resolved configuration to EXPERIMENT_PATH for reproducibility.
+
+    The resolved config will have all OmegaConf interpolations (${...}) expanded to their
+    actual values, making it suitable for direct use as a standalone experiment config.
+
+    Args:
+        config: The DictConfig to dump (should already be resolved)
+
+    The config will be saved to: ${EXPERIMENT_PATH}/train_config_resolved.yaml
+    """
+    experiment_path = os.environ.get("EXPERIMENT_PATH")
+    if experiment_path:
+        resolved_config_path = os.path.join(experiment_path, "train_config_resolved.yaml")
+        try:
+            os.makedirs(experiment_path, exist_ok=True)
+            with open(resolved_config_path, "w", encoding="utf-8") as f:
+                # Save fully resolved config as YAML
+                # This config can be used directly as another experiment config
+                OmegaConf.save(config, f, resolve=True)
+            logger.info(f"Saved resolved config to: {resolved_config_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save resolved config: {e}")
+    else:
+        logger.warning("EXPERIMENT_PATH not set, skipping resolved config dump")
 
 
 def insert_config(
