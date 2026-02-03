@@ -6,6 +6,7 @@ NexRL is a production-ready, distributed LLM post-training framework defined by 
 
 ## News 🚀
 
+- **[2026.02.03]** We release the support for On-Policy Distillation. Try with [recipe](recipe/on_policy_distill/self_hosted_opd_qwen2a5_1a5b_from_7b.yaml).
 - **[2026.01.23]** [Weaver](https://weaver.nex-agi.com/) v1.1.0 is released with full fine-tuning support! Try full fine-tuning with Weaver using NexRL ([recipe](recipe/math/weaver_full_ft.yaml)).
 - **[2026.01.21]** We release a [blog](https://dawning-road.github.io/blog/nexrl) about the design and features of NexRL. Check it out!
 - **[2026.01.15] NexRL v1.0.0 is here!** Train [NexAU](https://github.com/nex-agi/nexau) agents with **zero code modification**—just configs and evaluators. New training-service mode supports [Weaver](https://weaver.nex-agi.com/) and [Tinker](https://thinkingmachines.ai/tinker/) APIs for effortless cloud training.
@@ -81,7 +82,7 @@ nexrl -m training-service \
   --run-nexrl
 ```
 
-Uses public images (`nexagi/nexrl:v1.0.0`, `lmsysorg/sglang:v0.5.4.post2`) and `/tmp` storage - perfect for testing!
+Uses public images (`nexagi/nexrl:latest`, `lmsysorg/sglang:v0.5.4.post2`) and `/tmp` storage - perfect for testing!
 
 **Development Setup**
 
@@ -131,8 +132,8 @@ nexrl -m self-hosted \
 
 **Key Variables:**
 - `NEXRL_STORAGE_PATH`: Storage path (default: `/tmp/nexrl`)
-- `NEXRL_WORKER_IMAGE`: Worker image (default: `nexagi/nexrl:v1.0.0`)
-- `NEXRL_CONTROLLER_IMAGE`: Controller image (default: `nexagi/nexrl:v1.0.0`)
+- `NEXRL_WORKER_IMAGE`: Worker image (default: `nexagi/nexrl:latest`)
+- `NEXRL_CONTROLLER_IMAGE`: Controller image (default: `nexagi/nexrl:latest`)
 - `NEXRL_INFERENCE_IMAGE`: Inference image (default: `lmsysorg/sglang:v0.5.4.post2`)
 - `WANDB_KEY`: WandB API key (optional)
 
