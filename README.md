@@ -82,7 +82,7 @@ nexrl -m training-service \
   --run-nexrl
 ```
 
-Uses public images (`nexagi/nexrl:v1.0.0`, `lmsysorg/sglang:v0.5.4.post2`) and `/tmp` storage - perfect for testing!
+Uses public images (`nexagi/nexrl:latest`, `lmsysorg/sglang:v0.5.4.post2`) and `/tmp` storage - perfect for testing!
 
 **Development Setup**
 
@@ -132,8 +132,8 @@ nexrl -m self-hosted \
 
 **Key Variables:**
 - `NEXRL_STORAGE_PATH`: Storage path (default: `/tmp/nexrl`)
-- `NEXRL_WORKER_IMAGE`: Worker image (default: `nexagi/nexrl:v1.0.0`)
-- `NEXRL_CONTROLLER_IMAGE`: Controller image (default: `nexagi/nexrl:v1.0.0`)
+- `NEXRL_WORKER_IMAGE`: Worker image (default: `nexagi/nexrl:latest`)
+- `NEXRL_CONTROLLER_IMAGE`: Controller image (default: `nexagi/nexrl:latest`)
 - `NEXRL_INFERENCE_IMAGE`: Inference image (default: `lmsysorg/sglang:v0.5.4.post2`)
 - `WANDB_KEY`: WandB API key (optional)
 

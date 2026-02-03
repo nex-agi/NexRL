@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # Default configuration values
 DEFAULT_CONFIG = {
     # Docker images - users should override these!
-    "worker_image": "nexagi/nexrl:v1.0.0",
-    "controller_image": "nexagi/nexrl:v1.0.0",
+    "worker_image": "nexagi/nexrl:latest",
+    "controller_image": "nexagi/nexrl:latest",
     "inference_image": "lmsysorg/sglang:v0.5.4.post2",
     # Storage - defaults to /tmp for quick testing
     "storage_path": "/tmp/nexrl",
