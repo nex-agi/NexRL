@@ -330,7 +330,7 @@ def load_inference_resource(cfg: dict) -> dict[str, Any]:
         service.inference_service.model_path: "/path/to/model"
         service.inference_service.resource.replicas: 4
         service.inference_service.resource.gpus_per_replica: 2
-        service.inference_service.resource.backend: "bp-sglang"
+        service.inference_service.resource.backend: "sglang"
         service.inference_service.resource.extra_args: ""
     """
     inference_service = (cfg.get("service") or {}).get("inference_service") or {}
@@ -352,7 +352,7 @@ def load_inference_resource(cfg: dict) -> dict[str, Any]:
 
     replicas = inference_resource.get("replicas")
     gpus_per_replica = inference_resource.get("gpus_per_replica")
-    backend = inference_resource.get("backend", "bp-sglang")
+    backend = inference_resource.get("backend", "sglang")
     extra_args = inference_resource.get("extra_args", "")
 
     for key, value in {

@@ -87,7 +87,7 @@ service:
     resource:
       replicas: 4
       gpus_per_replica: 2
-      backend: "bp-sglang"
+      backend: "sglang"
       extra_args: ""
 
   train_service:
