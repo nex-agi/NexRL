@@ -38,6 +38,7 @@ import requests
 import torch
 
 from ...train_service_client import TrainServiceClient
+from ...utils.url_utils import ensure_url_scheme
 
 # Import utils for serialization utilities
 from ..utils.core_utils import (
@@ -65,8 +66,12 @@ class HTTPTrainServiceClient(TrainServiceClient):
                        the only/first group (useful for single-group setups).
                        Once set, the identifier is immutable for this client instance.
         """
-        super().__init__(base_url, identifier)
-        self.base_url = base_url.rstrip("/")
+        # Ensure base_url has proper http:// scheme
+        normalized_url = ensure_url_scheme(base_url)
+        if not normalized_url:
+            raise ValueError("base_url is required for HTTPTrainServiceClient")
+        super().__init__(normalized_url, identifier)
+        self.base_url = normalized_url.rstrip("/")
         self.session = requests.Session()
         # Set reasonable timeout for requests (passed to individual request methods)
         self.request_timeout = 200

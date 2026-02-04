@@ -30,6 +30,7 @@ from omegaconf import DictConfig
 from ..base_module import NexRLModule
 from ..executor import execute
 from ..nexrl_types import ModelTag
+from ..utils.url_utils import ensure_url_scheme
 
 if TYPE_CHECKING:
     from ..data_loader import BaseDataLoader
@@ -103,12 +104,15 @@ class WeightSyncController(NexRLModule):
             self._identifier = model_tag
         else:
             self._identifier = identifier or "default"
+        # Ensure base_url has proper http:// scheme
+        raw_base_url = self._inference_service_config.get("base_url", "")
+        base_url = ensure_url_scheme(raw_base_url) if raw_base_url else ""
         self._rollout_services[self._identifier] = RolloutServiceState(
             model_name=self._inference_service_config.model,
             weight_type=self._inference_service_config.weight_type,
             weight_path=self._config.get("sync_weight_path", ""),
             backend=self._inference_service_config.backend,
-            base_url=self._inference_service_config.get("base_url", ""),
+            base_url=base_url,
         )
 
         # References to other components (will be set via dependency injection)
