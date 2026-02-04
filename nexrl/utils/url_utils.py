@@ -59,7 +59,6 @@ def ensure_url_scheme(url: str | None, default_scheme: str = "http") -> str:
     # If no scheme is present, add the default scheme
     if not parsed.scheme:
         url = f"{default_scheme}://{url}"
-        logger.info(f"Added '{default_scheme}://' scheme to URL: {url}")
     elif parsed.scheme not in ("http", "https"):
         # If scheme exists but is not http/https, warn the user
         logger.warning(
