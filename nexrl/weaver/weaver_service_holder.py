@@ -32,6 +32,8 @@ except ImportError:
     ServiceClient = None
     types = None
 
+from ..utils.url_utils import ensure_url_scheme
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +57,11 @@ class WeaverServiceHolder:
             f"Initializing WeaverServiceHolder with base_model: {base_model}, base_url: {base_url}"
         )
 
-        self._service_client = ServiceClient(base_url=base_url, api_key=os.getenv("WEAVER_API_KEY"))
+        # Ensure base_url has proper http:// scheme
+        normalized_url = ensure_url_scheme(base_url, default_scheme="https") if base_url else None
+        self._service_client = ServiceClient(
+            base_url=normalized_url, api_key=os.getenv("WEAVER_API_KEY")
+        )
         self._base_model = base_model
         self._lora_rank = lora_rank
 

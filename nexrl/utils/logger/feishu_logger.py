@@ -20,10 +20,16 @@ from unittest.mock import patch
 import requests  # type: ignore[import-untyped]
 import urllib3
 
+from nexrl.utils.url_utils import ensure_url_scheme
+
 
 class LarkReporter:
     def __init__(self, url: str, user_name: str):
-        self.url = url
+        # Ensure URL has proper http:// or https:// scheme
+        normalized_url = ensure_url_scheme(url, default_scheme="https")
+        if not normalized_url:
+            raise ValueError("URL is required for LarkReporter")
+        self.url = normalized_url
         self.user_name = user_name
         USER_OPENID_FILE = os.environ.get("USER_OPENID_FILE", "")
 

@@ -384,14 +384,6 @@ service:
       extra_args: ""
 
   #----------------------------------------
-  # Tinker Service (Optional - only for Tinker backend)
-  #----------------------------------------
-  tinker_service:
-    base_url: null
-    lora_rank: 32
-    api_key: ""
-
-  #----------------------------------------
   # Training Services
   #----------------------------------------
   # Each service group is a complete self-contained training configuration

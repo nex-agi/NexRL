@@ -27,6 +27,8 @@ try:
 except ImportError:
     tinker = None
 
+from ..utils.url_utils import ensure_url_scheme
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +72,9 @@ class TinkerServiceHolder:
             f"Initializing TinkerServiceHolder with base_model: {base_model}, base_url: {base_url}"
         )
 
-        self._service_client = tinker.ServiceClient(base_url=base_url)
+        # Ensure base_url has proper http:// scheme
+        normalized_url = ensure_url_scheme(base_url, default_scheme="https") if base_url else None
+        self._service_client = tinker.ServiceClient(base_url=normalized_url)
         self._base_model = base_model
         self._lora_rank = lora_rank
 

@@ -49,6 +49,7 @@ import zmq
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 
+from ...utils.url_utils import ensure_url_scheme
 from ..utils.config_loader import load_nextrainer_config
 from ..utils.protocol import DataProto
 
@@ -188,8 +189,13 @@ class WorkerZMQCoordinator:
         self.context = zmq.Context()
         self.dispatch_mode = dispatch_mode
 
+        # Ensure api_server_url has proper http:// scheme
+        normalized_url = ensure_url_scheme(api_server_url or "http://localhost:8000")
+        if not normalized_url:
+            normalized_url = "http://localhost:8000"
+
         # Extract hostname from API server URL
-        parsed_url = urlparse(api_server_url or "http://localhost:8000")
+        parsed_url = urlparse(normalized_url)
         hostname = parsed_url.hostname
         # Ensure master_addr is a string
         self.master_addr: str = hostname if hostname else "localhost"
@@ -199,15 +205,13 @@ class WorkerZMQCoordinator:
         self.heartbeat_stop_event = threading.Event()
 
         # Update API server URL to use master address if it's using localhost
-        if api_server_url is None:
-            api_server_url = f"http://{self.master_addr}:8000"
-        elif "localhost" in api_server_url or "127.0.0.1" in api_server_url:
+        if "localhost" in normalized_url or "127.0.0.1" in normalized_url:
             # Replace localhost/127.0.0.1 with master address for multi-node support
-            api_server_url = api_server_url.replace("localhost", self.master_addr).replace(
+            normalized_url = normalized_url.replace("localhost", self.master_addr).replace(
                 "127.0.0.1", self.master_addr
             )
 
-        self.api_server_url: str = api_server_url
+        self.api_server_url: str = normalized_url
         logger.info(f"Rank {rank}: API server URL: {self.api_server_url}")
 
         # Get base port from API server if not provided

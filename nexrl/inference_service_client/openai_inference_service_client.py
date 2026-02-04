@@ -27,6 +27,7 @@ from typing import Any
 import openai
 from omegaconf import DictConfig
 
+from ..utils.url_utils import ensure_url_scheme
 from .base_inference_service_client import InferenceServiceClient, hf_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -102,9 +103,13 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         )
 
         # Initialize OpenAI client based on config
+        # Ensure base_url has proper http:// scheme
+        base_url = ensure_url_scheme(config.inference_service.base_url)
+        if not base_url:
+            raise ValueError("base_url is required for OpenAI inference service")
         self._oai_llm = openai.OpenAI(
             api_key=config.inference_service.api_key,
-            base_url=config.inference_service.base_url + "/v1",
+            base_url=base_url + "/v1",
             timeout=1000,
         )
 
