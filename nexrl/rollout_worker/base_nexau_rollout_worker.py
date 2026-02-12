@@ -484,7 +484,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         )
 
         # Run agent
-        response = agent.run(query, custom_llm_client_provider=client_provider_func)
+        response = agent.run(message=query, custom_llm_client_provider=client_provider_func)
 
         # Extract traces
         traces = []
