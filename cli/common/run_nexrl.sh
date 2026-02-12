@@ -64,4 +64,10 @@ log_path=${EXPERIMENT_PATH}/nexrl.log
 
 export PYTHONPATH=`pwd`:$PYTHONPATH
 echo "Launching NexRL with config: ${TRAIN_CONFIG}"
-python -m nexrl.main --config-path="${CONFIG_DIR}" --config-name="${CONFIG_NAME}" 2>&1 | tee ${log_path}
+
+if [[ -n "${DEBUG_HYDRA_OVERRIDES}" ]]; then
+    echo "Applying debug overrides: ${DEBUG_HYDRA_OVERRIDES}"
+    python -m nexrl.main --config-path="${CONFIG_DIR}" --config-name="${CONFIG_NAME}" ${DEBUG_HYDRA_OVERRIDES} 2>&1 | tee ${log_path}
+else
+    python -m nexrl.main --config-path="${CONFIG_DIR}" --config-name="${CONFIG_NAME}" 2>&1 | tee ${log_path}
+fi

@@ -69,6 +69,8 @@ spec:
                 - name: ENVIRONMENT_SETUP_SCRIPT
                   value: "{{environment_setup_script}}"
                 {% endif %}
+                - name: DEBUG_HYDRA_OVERRIDES
+                  value: "{{debug_hydra_overrides|default('')}}"
                 - name: IS_AGENT_WORKER
                   value: "false"
                 - name: NUM_AGENTS_PER_WORKER

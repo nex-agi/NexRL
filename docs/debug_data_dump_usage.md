@@ -1,8 +1,80 @@
 # Debug Data Dump 使用指南
 
-## 1. 启用 Debug Data Dump
+## 1. 快速开始：使用 Debug Mode (推荐)
 
-### 1.1 Self-hosted Mode
+### 1.1 简化的 Debug Mode
+
+从 v2.1 开始，NexRL 提供了简化的 `--debug-mode` 选项，自动处理 trajectory dump 和 load。
+
+#### 使用方法
+
+**首次运行（生成 trajectory）：**
+```bash
+# Internal (scripts/)
+python scripts/run.py --mode self-hosted --train-config recipe.yaml --run-nexrl --debug-mode
+
+# Open-source (cli/)
+python cli/run.py --mode self-hosted --train-config config.yaml --run-nexrl --debug-mode
+```
+
+**第二次运行（自动检测并复用 trajectory）：**
+```bash
+# 运行相同命令
+python scripts/run.py --mode self-hosted --train-config recipe.yaml --run-nexrl --debug-mode
+```
+
+系统会：
+1. 自动查找最近生成的 trajectory
+2. 显示 trajectory 信息（路径、大小、时间）
+3. 询问是否复用：`Use this trajectory for mock rollout? [Y/n]:`
+4. 如果选择 Y：使用 mock mode，自动将 rollout workers 减少到 1
+5. 如果选择 N：正常执行 rollout
+
+**非交互模式（脚本化工作流）：**
+```bash
+python scripts/run.py --mode self-hosted --train-config recipe.yaml --run-nexrl \
+  --debug-mode \
+  --debug-baseline-path logs/experiment_name/20260206-120000
+```
+
+### 1.2 Debug Mode 特性
+
+- ✅ **自动检测**：智能查找最新的包含 trajectory 的实验（跳过仅复用 trajectory 的运行）
+- ✅ **交互确认**：显示详细信息，用户明确确认
+- ✅ **性能优化**：Mock mode 自动将 rollout workers 减少到 1（避免 224 个 worker 加载相同文件）
+- ✅ **无缝集成**：通过 Hydra overrides 自动配置，无需修改 YAML
+- ✅ **兼容两种模式**：同时支持 self-hosted 和 training-service 模式
+
+### 1.3 输出示例
+
+**首次运行（无 trajectory）：**
+```
+[WARNING] No trajectory found in any previous run.
+[WARNING] Normal rollout will execute.
+[INFO] Debug mode: Normal rollout (will dump trajectory)
+[INFO] Using experiment path: logs/experiment/20260206-120000
+```
+
+**第二次运行（检测到 trajectory）：**
+```
+[INFO] Found trajectory from run: 20260206-120000
+Trajectory: logs/experiment/20260206-120000/debug_dump/trajectory/step_000000.pt
+Size: 2.5 MB | Modified: 2026-02-06 12:15:32
+Use this trajectory for mock rollout? [Y/n]: Y
+[INFO] Using trajectory: logs/experiment/20260206-120000/debug_dump/trajectory/step_000000.pt
+[INFO] Debug mode: Mock rollout (reusing trajectory)
+[INFO] Automatically reducing rollout workers to 1 (no parallel benefit in mock mode)
+```
+
+---
+
+## 2. 手动配置方式（高级用户）
+
+如果需要更精细的控制，可以手动配置 debug dump。
+
+### 2.1 启用 Debug Data Dump
+
+#### 2.1.1 Self-hosted Mode
 
 在 YAML 配置文件中添加 `debug` 节：
 
@@ -26,7 +98,7 @@ debug:
   target_param_pattern: "model\\.layers\\.0\\.self_attn\\.q_proj\\.weight"
 ```
 
-### 1.2 Remote API Mode
+#### 2.1.2 Remote API Mode
 
 使用 Weaver 远程训练服务时，配置 `remote_api_dump_options`：
 
@@ -48,7 +120,7 @@ debug:
 - `datums`: 发送给 Weaver 的训练数据（Datum 格式）
 - `training_metrics`: Weaver 返回的训练指标（loss, tokens 等）
 
-## 2. 从 Dump 文件加载 Trajectory 训练
+### 2.2 从 Dump 文件加载 Trajectory 训练
 
 修改子配置文件覆盖 `rollout_worker`：
 
@@ -67,7 +139,7 @@ rollout_worker:
 
 **注意**：Mock worker 根据 task 的 `(group_id, run_id)` 匹配对应 trajectory。
 
-## 3. 完整示例
+### 2.3 完整示例
 
 参考 `NexRL-recipes/production/single_turn_math_qwen2a5_7b/single_turn_math_qwen3_8b.yaml`：
 
@@ -90,9 +162,11 @@ rollout_worker:
   trajectory_format: "pt"
 ```
 
-## 4. Dump 目录结构
+---
 
-### 4.1 Self-hosted Mode
+## 3. Dump 目录结构
+
+### 3.1 Self-hosted Mode
 
 ```
 debug_dump/
@@ -105,7 +179,7 @@ debug_dump/
 └── gradient/            # Gradients (if enabled)
 ```
 
-### 4.2 Remote API Mode
+### 3.2 Remote API Mode
 
 ```
 debug_dump/
@@ -117,7 +191,7 @@ debug_dump/
     └── step_000000.pt
 ```
 
-### 4.3 Weaver-trainer Mode
+### 3.3 Weaver-trainer Mode
 
 weaver-trainer 使用环境变量配置 debug dump：
 
@@ -148,11 +222,11 @@ weaver_debug_dump/
 └── gradient/               # Gradients (if enabled)
 ```
 
-## 5. 比较 Debug Dumps
+## 4. 比较 Debug Dumps
 
 使用 `compare_debug_dumps.py` 脚本比较 self-hosted 和 weaver-trainer 的 dump 数据：
 
-### 5.1 基本用法
+### 4.1 基本用法
 
 ```bash
 python nexrl/utils/compare_debug_dumps.py \
@@ -162,7 +236,7 @@ python nexrl/utils/compare_debug_dumps.py \
   --output comparison_report.json
 ```
 
-### 5.2 完整参数
+### 4.2 完整参数
 
 ```bash
 python nexrl/utils/compare_debug_dumps.py \
@@ -184,7 +258,7 @@ python nexrl/utils/compare_debug_dumps.py \
 - `--num_micros`: 要比较的 microbatch 数量（默认：2）
 - `--output`: 输出 JSON 报告文件路径（可选）
 
-### 5.3 比较内容
+### 4.3 比较内容
 
 脚本会比较以下数据（跨所有 ranks 和 microbatches）：
 
@@ -206,7 +280,7 @@ python nexrl/utils/compare_debug_dumps.py \
    - `effective_valid`: 有效的 mask
 5. **Datums**: 发送给 Weaver 的数据结构分析
 
-### 5.4 输出示例
+### 4.4 输出示例
 
 终端输出：
 
@@ -237,7 +311,7 @@ Diff statistics:
   mean: 1.234567e-04
 ```
 
-### 5.5 问题诊断
+### 4.5 问题诊断
 
 **Shape mismatch**: 序列长度不一致
 - 检查 padding 策略是否一致
@@ -252,3 +326,51 @@ Diff statistics:
 **Missing data**:
 - 检查 dump_options 配置是否启用
 - 检查环境变量是否正确设置（weaver-trainer）
+
+---
+
+## 5. FAQ
+
+### 5.1 为什么 Mock mode 会自动减少 rollout workers 到 1？
+
+Mock mode 只是重放预先录制的 trajectory，不需要 LLM 推理，因此并行 workers 没有性能优势。如果使用 224 个 workers，每个都会加载整个 trajectory 文件（可能几百 MB），造成极大的内存和 I/O 浪费。
+
+**节省示例：**
+- 之前：224 workers × 100MB trajectory = 22.4GB 内存浪费
+- 现在：1 worker × 100MB trajectory = 100MB（节省 222x）
+
+### 5.2 如何跳过交互式确认？
+
+使用 `--debug-baseline-path` 参数：
+
+```bash
+python scripts/run.py --mode self-hosted --train-config recipe.yaml --run-nexrl \
+  --debug-mode \
+  --debug-baseline-path logs/experiment/20260206-120000
+```
+
+### 5.3 为什么自动检测会跳过某些运行？
+
+Debug mode 使用"filter-then-sort"算法，只查找**包含 trajectory 文件**的运行：
+
+- Run 1 (20260201-100000): 正常 rollout → 生成 trajectory ✓
+- Run 2 (20260202-110000): Mock mode 复用 Run 1 → 无 trajectory ✗
+- Run 3 (20260203-120000): 自动检测会找到 Run 1（不是 Run 2）
+
+这确保找到的是真正生成数据的运行，而不是中间的复用运行。
+
+### 5.4 Debug mode 支持哪些模式？
+
+- ✅ Self-hosted mode (scripts/ 和 cli/)
+- ✅ Training-service mode (scripts/ 和 cli/)
+- ✅ 两者都支持交互式和非交互式工作流
+
+### 5.5 如果我想保留多个 workers 进行 mock rollout？
+
+不推荐，但如果确实需要，可以手动配置 YAML（不使用 `--debug-mode`），系统会发出警告：
+
+```
+[WARNING] MockRolloutWorker is loading trajectories on 224 workers.
+This is wasteful as each worker loads the entire file.
+Consider setting rollout_worker.resource.num_workers=1 for trajectory reuse.
+```

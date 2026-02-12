@@ -46,6 +46,12 @@ from ..common.config_utils import (
     load_identifier_world_sizes,
     load_inference_resource,
 )
+from ..common.debug_utils import (
+    build_debug_overrides,
+    check_trajectory_exists,
+    find_most_recent_experiment_with_trajectory,
+    prompt_user_confirmation,
+)
 from ..utils import config_manager, k8s_utils
 from . import yaml_builder as builder
 
@@ -498,6 +504,7 @@ def launch_nexrl_driver(
     user_secrets: dict,
     tag: str = "",
     inference_base_url: str = "",
+    debug_hydra_overrides: str = "",
 ) -> str:
     """Launch NexRL driver."""
     print("[INFO] Launching NexRL driver...")
@@ -542,6 +549,7 @@ def launch_nexrl_driver(
         tinker_base_url=tinker_base_url,
         weaver_api_key=weaver_api_key,
         weaver_base_url=weaver_base_url,
+        debug_hydra_overrides=debug_hydra_overrides,
     )
 
     # Save YAML
@@ -576,6 +584,15 @@ def main():
         default="",
         help="Use existing inference service URL (skips launching inference). Do not include http:// prefix.",
     )
+    parser.add_argument(
+        "--debug-mode", action="store_true", help="Enable debug mode for trajectory dump/load"
+    )
+    parser.add_argument(
+        "--debug-baseline-path",
+        type=str,
+        default="",
+        help="Path to baseline experiment for trajectory reuse (optional)",
+    )
     args = parser.parse_args()
 
     train_config_path = Path(args.train_config).resolve()
@@ -583,6 +600,48 @@ def main():
     # Load configurations
     print("[INFO] Loading configurations...")
     config = load_config(train_config_path)
+
+    # Handle debug mode
+    debug_overrides = ""
+    if args.debug_mode:
+        trajectory_path = None
+        experiment_name = config.get("experiment_name", "default")
+
+        if args.debug_baseline_path:
+            # Explicit baseline: validate and use
+            baseline_path = Path(args.debug_baseline_path)
+            trajectory_path = check_trajectory_exists(baseline_path)
+            if not trajectory_path:
+                print(f"[ERROR] No trajectory found at {baseline_path}/debug_dump/trajectory/")
+                sys.exit(1)
+            print(f"[INFO] Using baseline trajectory: {trajectory_path}")
+        else:
+            # Auto-detect: find latest WITH trajectory, then prompt
+            result = find_most_recent_experiment_with_trajectory(
+                NEXRL_PATH / "logs", experiment_name
+            )
+            if result:
+                run_path, traj_path = result
+                print(f"[INFO] Found trajectory from run: {run_path.name}")
+                if prompt_user_confirmation(run_path, traj_path):
+                    trajectory_path = traj_path
+                    print(f"[INFO] Using trajectory: {trajectory_path}")
+                else:
+                    print("[WARNING] User declined. Normal rollout will execute.")
+            else:
+                print("[WARNING] No trajectory found in any previous run.")
+                print("[WARNING] Normal rollout will execute.")
+
+        # Build Hydra override string
+        debug_overrides = build_debug_overrides(trajectory_path)
+
+        if trajectory_path:
+            print("[INFO] Debug mode: Mock rollout (reusing trajectory)")
+            print(
+                "[INFO] Automatically reducing rollout workers to 1 (no parallel benefit in mock mode)"
+            )
+        else:
+            print("[INFO] Debug mode: Normal rollout (will dump trajectory)")
     admin_config = config_manager.load_admin_config()
     if not admin_config:
         print("[ERROR] Failed to load configuration.")
@@ -708,6 +767,7 @@ def main():
         user_secrets,
         args.tag,
         inference_base_url=inference_base_url,
+        debug_hydra_overrides=debug_overrides,
     )
 
     print("\n" + "=" * 60)
