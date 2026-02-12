@@ -164,8 +164,69 @@ class DataProto:
                     isinstance(val, np.ndarray) and val.dtype == object
                 ), "data in the non_tensor_batch must be a numpy.array with dtype=object"
                 assert (
+                    len(val.shape) > 0
+                ), f"key {key} in non_tensor_batch is a scalar (0-dimensional array), but should be a 1D array with batch dimension"
+                assert (
                     val.shape[0] == batch_size
                 ), f"key {key} length {len(val)} is not equal to batch size {batch_size}"
+
+    def estimate_size_bytes(self) -> int:
+        """Estimate the serialized size of this DataProto in bytes.
+
+        This provides a rough estimate without actually serializing the data,
+        which avoids memory overhead. Useful for timeout calculations and logging.
+
+        Returns:
+            int: Estimated size in bytes, or -1 if estimation fails
+        """
+        try:
+            import sys
+
+            total_bytes = 0
+
+            # Estimate size of TensorDict batch
+            if self.batch is not None:
+                for key, tensor in self.batch.items():
+                    if hasattr(tensor, "element_size") and hasattr(tensor, "numel"):
+                        # PyTorch tensor - compute actual memory size
+                        total_bytes += tensor.element_size() * tensor.numel()
+                    else:
+                        # Fallback for non-tensor items
+                        total_bytes += sys.getsizeof(tensor)
+
+            # Estimate size of non_tensor_batch
+            if self.non_tensor_batch:
+                for key, value in self.non_tensor_batch.items():
+                    if isinstance(value, np.ndarray):
+                        # NumPy array - compute actual memory size
+                        total_bytes += value.nbytes
+                    else:
+                        # Fallback to sys.getsizeof
+                        total_bytes += sys.getsizeof(value)
+
+            # Estimate size of meta_info (usually small)
+            if self.meta_info:
+                for key, value in self.meta_info.items():
+                    total_bytes += sys.getsizeof(key) + sys.getsizeof(value)
+
+            # Add 20% overhead for pickle structure, dict keys, and metadata
+            total_bytes = int(total_bytes * 1.2)
+
+            return total_bytes
+        except Exception:
+            # If estimation fails for any reason, return -1
+            return -1
+
+    def estimate_size_mb(self) -> float:
+        """Estimate the serialized size of this DataProto in megabytes.
+
+        Returns:
+            float: Estimated size in MB, or -1.0 if estimation fails
+        """
+        size_bytes = self.estimate_size_bytes()
+        if size_bytes < 0:
+            return -1.0
+        return size_bytes / (1024 * 1024)
 
     @classmethod
     def from_dict(

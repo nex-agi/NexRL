@@ -121,7 +121,7 @@ class SelfHostedTrainer(BaseTrainer):
         """
         backend = self._actor_train_service_config.backend
 
-        if backend in ("nextrainer", "http"):
+        if backend in ("direct-zmq"):
             logger.info("Initializing self-hosted workers with final config...")
             try:
                 from omegaconf import OmegaConf
@@ -150,10 +150,13 @@ class SelfHostedTrainer(BaseTrainer):
                         f"[DEBUG] debug_config={debug_config}, 'actor' in config_dict={'actor' in config_dict}"
                     )
 
+                # Get the role from actor config (defaults to "actor" for backward compatibility)
+                actor_role = self._actor_train_service_config.get("role", "actor")
+
                 # Initialize workers with config
                 try:
                     result = self._train_service_client.initialize_worker(
-                        config_dict=config_dict, role="actor"
+                        config_dict=config_dict, role=actor_role
                     )
                     logger.info(f"Workers initialized: {result}")
                 except Exception as e:
@@ -181,7 +184,8 @@ class SelfHostedTrainer(BaseTrainer):
         elif backend == "mock":
             logger.info("Mock backend - skipping worker initialization")
         else:
-            logger.warning(f"Unknown backend {backend} - skipping worker initialization")
+            logger.error(f"Unknown backend {backend} - skipping worker initialization")
+            raise ValueError(f"Unknown backend {backend} - skipping worker initialization")
 
     def stop(self) -> None:
         """Stop the trainer with cleanup for checkpoint saving."""
@@ -223,7 +227,7 @@ class SelfHostedTrainer(BaseTrainer):
         Returns:
             Dictionary of training metrics
         """
-        logger.info("SelfHostedTrainer begin")
+        logger.debug("SelfHostedTrainer begin training step")
 
         # Dump trajectories before processing (for debug)
         if self._data_dumper.should_dump("trajectory", self._train_step):
@@ -238,15 +242,18 @@ class SelfHostedTrainer(BaseTrainer):
         batch = batch.pad_to_world_size(world_size=self.world_size)
 
         # Step 3: Prepare batch (algorithm-specific)
-        logger.info("Trainer begin batch preparation!")
+        logger.debug("Begin batch preparation")
         preparation_start = time.time()
         batch, preparation_metrics = self._prepare_batch(batch)
         preparation_time = time.time() - preparation_start
-        logger.info("Trainer batch preparation completed!")
+        logger.debug(f"Batch preparation completed in {preparation_time:.2f}s")
 
         # Step 4: Execute training step
         batch_start_time = time.time()
         batch_size = len(batch)
+        logger.info(
+            f"batch size: {batch_size} sequence length: {batch.values['attention_mask'].shape[1]}"
+        )
 
         # Propagate trainer-side global step to workers (used for easy_dump filenames, etc.)
         batch.metadata["global_step"] = self._train_step
@@ -256,7 +263,9 @@ class SelfHostedTrainer(BaseTrainer):
 
             # Update actor
             update_actor_start_time = time.time()
-            actor_output = self._train_service_client.update_actor(batch.to_nextrainer_batch())
+            nextrainer_batch = batch.to_nextrainer_batch()
+
+            actor_output = self._train_service_client.update_actor(nextrainer_batch)
             update_actor_time = time.time() - update_actor_start_time
             train_metrics = self._reduce_metrics(actor_output["meta_info"]["metrics"])
 
@@ -312,6 +321,7 @@ class SelfHostedTrainer(BaseTrainer):
                 "timing/training/training_step": training_step_time,
                 "training/global_step": self._train_step,
                 "training/batch_size": batch_size,
+                "training/sequence_length": batch.values["attention_mask"].shape[1],
             }
         )
 

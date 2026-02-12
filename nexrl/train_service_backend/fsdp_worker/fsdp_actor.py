@@ -642,6 +642,7 @@ class DataParallelPPOActor:
 
     def update_policy(self, data: DataProto):
         # make sure we are in training mode
+        print(f"Update policy in training mode rank {torch.distributed.get_rank()}")
         self.actor_module.train()
 
         # temperature must be in the data.meta_info to avoid slient error
@@ -667,6 +668,9 @@ class DataParallelPPOActor:
         for epoch in range(self.config.ppo_epochs):
             dataloader = batch.split(self.config.ppo_mini_batch_size)
             for batch_idx, mini_batch in enumerate(dataloader):
+                print(
+                    f"Update policy epoch {epoch} batch_idx {batch_idx} rank {torch.distributed.get_rank()}"
+                )
                 # split batch into micro_batches
                 if self.config.use_dynamic_bsz:
                     max_token_len = (

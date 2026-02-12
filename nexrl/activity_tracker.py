@@ -397,6 +397,13 @@ class ActivityTracker:
             logger.warning("Rollout progress monitor already running")
             return
 
+        # Log available modules for debugging
+        with self._cv:
+            available_modules = list(self._module_refs.keys())
+            logger.debug(
+                f"Starting rollout progress monitor. Available modules: {available_modules}"
+            )
+
         self._progress_stop_event.clear()
         self._progress_thread = threading.Thread(
             target=self._progress_monitor_loop, daemon=True, name="RolloutProgressMonitor"

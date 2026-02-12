@@ -19,32 +19,65 @@ def create_train_service_client(
     backend: str,
     url: str,
     identifier: str | None = None,
-    **kwargs,  # pylint: disable=unused-argument
+    **kwargs,
 ) -> TrainServiceClient:
     """
     Create a train service client based on the backend configuration
 
     Args:
-        backend: The backend type ('nextrainer', 'mock')
+        backend: The backend type ('direct-zmq', 'http', 'nextrainer', 'mock')
         url: The service URL
         identifier: Optional identifier for the worker group
-        **kwargs: Additional arguments (e.g., tinker_service_holder, config for Tinker)
+        **kwargs: Additional arguments:
+            - config: Optional dict with client configuration (e.g., timeouts)
+            - tinker_service_holder: For Tinker backend
+            - weaver_service_holder: For Weaver backend
 
     Returns:
         A TrainServiceClient instance
 
     Raises:
         NotImplementedError: If the backend is not supported
+
+    Backend options:
+        - 'direct-zmq' (RECOMMENDED): Uses direct ZMQ connections to workers for data
+                   operations, HTTP to API server for coordination only. This is
+                   the production backend that:
+                   - Eliminates API server OOM (data never lands there)
+                   - Reduces network hops (single serialization)
+                   - Supports two-phase protocol for NCCL timing
+        - 'http' or 'nextrainer': Now mapped to 'direct-zmq' for backward compatibility.
+                   All operations use DirectZMQ client.
+        - 'mock': Mock client for testing
     """
-    if backend in (
-        "nextrainer",
-        "http",
-    ):  # nextrainer will be deprecated in the future, use http instead
-        from ..train_service_backend.api.client import (  # pylint: disable=relative-beyond-top-level
-            HTTPTrainServiceClient,
+    # Map 'http' and 'nextrainer' to 'direct-zmq' for backward compatibility
+    if backend in ("nextrainer", "http"):
+        import warnings
+
+        warnings.warn(
+            f"Backend '{backend}' is deprecated and now uses DirectZMQTrainServiceClient. "
+            f"Please update your config to use backend='direct-zmq' explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        backend = "direct-zmq"
+
+    if backend == "direct-zmq":
+        from ..train_service_backend.api.direct_zmq_client import (  # pylint: disable=relative-beyond-top-level
+            DirectZMQTrainServiceClient,
         )
 
-        return HTTPTrainServiceClient(url, identifier)
+        # Extract optional config parameters
+        config = kwargs.get("config", {})
+        zmq_recv_timeout_ms = config.get("zmq_recv_timeout_ms", 600000)  # 10 minutes
+        zmq_total_timeout_ms = config.get("zmq_total_timeout_ms", 3600000)  # 60 minutes
+
+        return DirectZMQTrainServiceClient(
+            base_url=url,
+            identifier=identifier,
+            zmq_recv_timeout_ms=zmq_recv_timeout_ms,
+            zmq_total_timeout_ms=zmq_total_timeout_ms,
+        )
     elif backend == "mock":
         from ..mock.mock_train_service_client import (  # pylint: disable=relative-beyond-top-level
             MockTrainServiceClient,
