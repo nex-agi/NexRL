@@ -12,6 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Train Service Backend.
+
+This module provides the backend infrastructure for training with distributed workers.
+
+DirectZMQTrainServiceClient is the production client that sends data directly to
+workers via ZMQ while using HTTP for coordination with the API server.
+
+Use `create_train_service_client()` from `nexrl.utils.init_utils` to create clients
+based on configuration, or import directly for explicit control.
+"""
+
+from .api.direct_zmq_client import DirectZMQTrainServiceClient
 from .fsdp_worker.fsdp_actor import DataParallelPPOActor
 from .utils.core_utils import (
     CheckpointRequest,
@@ -26,8 +38,13 @@ from .utils.core_utils import (
 from .utils.protocol import DataProto
 
 __all__ = [
+    # Clients
+    "DirectZMQTrainServiceClient",
+    # Protocol
     "DataProto",
+    # Worker
     "DataParallelPPOActor",
+    # Data types
     "TensorData",
     "NumpyData",
     "DataProtoRequest",

@@ -138,13 +138,16 @@ class NexRLController:
         """Start the training process"""
         logger.info("Starting NexRL training process...")
 
+        logger.info("Initializing trainers...")
         execute(self.trainer.initialize_workers)
 
         # Load initial checkpoint
+        logger.info("Loading initial checkpoint...")
         self._load_initial_checkpoint()
 
         if self._config.validate.validate_before_train:
             # identifier serves as model_tag for weight sync coordination
+            logger.info("Starting validation...")
             self._start_validate(self._config.service.inference_service.identifier)
 
         # Start all components
@@ -169,6 +172,7 @@ class NexRLController:
         health_check_interval = health_config.get("check_interval", 10.0)
         exception_check_interval = exception_config.get("check_interval", 1.0)
 
+        logger.info("Starting training loop...")
         while True:
             # Check if weight sync is waiting for validation
             # identifier serves as model_tag for weight sync coordination
@@ -262,7 +266,6 @@ class NexRLController:
             actor_train_service.backend,
             actor_train_service.url,
             actor_train_service.get("identifier", None),
-            tinker_service_holder=getattr(self, "_tinker_service_holder", None),
             config=actor_train_service.get("config", {}),
         )
 
@@ -276,6 +279,7 @@ class NexRLController:
             save_weight_only=True,
             remove_previous_ckpt=False,
         )
+        logger.info("Syncing weight to rollout service...")
         execute(
             self.weight_sync_controller.sync_weight_to_rollout_service,
             actor_train_service.identifier,

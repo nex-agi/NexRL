@@ -34,6 +34,7 @@ The configuration structure has been refactored to support:
 |----------|----------|----------|--------|
 | Inference identifier | `service.inference_service.model_tag` | `service.inference_service.identifier` | ⚠️ Deprecated |
 | Train identifier | `service.train_service.model_tag` | `service.train_service.<name>.identifier` | ⚠️ Deprecated |
+| **Train backend** | **`service.train_service.<name>.backend: http`** | **`service.train_service.<name>.backend: direct-zmq`** | **⚠️ Deprecated** |
 | Train resources | `resource.train.<id>.world_size` | `service.train_service.<name>.resource.world_size` | ⚠️ Deprecated |
 | Inference resources | `resource.inference.*` | `service.inference_service.resource.*` | ⚠️ Deprecated |
 | Agent resources | `resource.agent.*` | `rollout_worker.resource.*` | ⚠️ Deprecated |
@@ -86,7 +87,77 @@ service:
 
 ---
 
-### 2. Train Service Structure: Flat → Nested
+### 2. Train Service Backend: `http` / `nextrainer` → `direct-zmq`
+
+**Change**: The train service backend has been refactored from HTTP-based communication to Direct ZMQ with rank-0-centric NCCL communication for better performance and scalability.
+
+#### Old Configuration
+```yaml
+service:
+  train_service:
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: http          # ← OLD (or "nextrainer")
+      url: "http://localhost:8000"
+      resource:
+        world_size: 1
+        gpus_per_pod: 8
+```
+
+#### New Configuration
+```yaml
+service:
+  train_service:
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: direct-zmq    # ← NEW
+      url: "http://localhost:8000"
+      resource:
+        world_size: 1
+        gpus_per_pod: 8
+```
+
+#### Backward Compatibility
+- ✅ Old `backend: http` and `backend: nextrainer` are still supported
+- ⚠️ Deprecation warning will be shown
+- ✅ Automatically converted to `direct-zmq` at runtime
+- 📅 Planned removal: v3.0
+
+#### Architecture Changes
+
+**Before (HTTP):**
+- Client sends data to API server via HTTP POST
+- API server broadcasts to all workers
+- High memory usage on API server
+
+**After (Direct ZMQ):**
+- Client sends data directly to rank 0 worker via ZMQ
+- Rank 0 distributes via fast NCCL scatter to all workers
+- API server only coordinates execution (PUB/SUB)
+- ACK-based two-phase protocol prevents race conditions
+
+**Key Benefits:**
+- **No API Server OOM**: Training data never touches API server
+- **NCCL Performance**: Fast InfiniBand/NVLink >> network ZMQ
+- **ACK-Based Ordering**: Execute signal never arrives before data
+- **SP/DP Aware**: Rank 0 handles device_mesh topology correctly
+
+#### Migration Steps
+1. Change `backend: http` to `backend: direct-zmq` in all train services
+2. Change `backend: nextrainer` to `backend: direct-zmq` if present
+3. Test your configuration (should work identically)
+4. Check logs for any remaining deprecation warnings
+
+#### Detailed Documentation
+For complete technical details, see:
+- [Direct ZMQ Migration Guide](../../.vibe/refactor_api_server/direct-zmq-migration-guide.md)
+- [Training Service Architecture](../07-services/training-service.md)
+
+---
+
+### 3. Train Service Structure: Flat → Nested
 
 **Change**: Train service configuration now supports multiple service groups with explicit names and roles.
 
@@ -131,7 +202,7 @@ service:
 
 ---
 
-### 3. Role Field Requirement
+### 4. Role Field Requirement
 
 **Change**: Each train service group should explicitly specify its `role`.
 
@@ -172,11 +243,11 @@ service:
 
 ---
 
-### 4. Resource Configuration Restructuring
+### 5. Resource Configuration Restructuring
 
 **Change**: Resource configurations have been moved from top-level `resource` section to service-specific locations.
 
-#### 4a. Train Resources
+#### 5a. Train Resources
 
 **Old:**
 ```yaml
@@ -206,7 +277,7 @@ service:
         gpus_per_pod: 8
 ```
 
-#### 4b. Inference Resources
+#### 5b. Inference Resources
 
 **Old:**
 ```yaml
@@ -237,7 +308,7 @@ service:
 
 **Note**: ALL fields from `resource.inference` are automatically migrated to `inference_service.resource` (except `model_path` and `served_model_name` which go to top level).
 
-#### 4c. Agent/Rollout Worker Resources
+#### 5c. Agent/Rollout Worker Resources
 
 **Old:**
 ```yaml
@@ -326,7 +397,7 @@ service:
     main_actor:
       identifier: "default"
       role: "actor"
-      backend: http
+      backend: direct-zmq        # ← NEW: Changed from http
       url: "http://localhost:8000"
       resource:
         world_size: 1
@@ -347,7 +418,7 @@ service:
     student_service:
       identifier: "student"
       role: "actor"
-      backend: http
+      backend: direct-zmq          # ← Use direct-zmq for better performance
       url: "http://localhost:8000"
       resource:
         world_size: 1
@@ -359,7 +430,7 @@ service:
     teacher_service:
       identifier: "teacher"
       role: "teacher"
-      backend: http
+      backend: direct-zmq          # ← Use direct-zmq for better performance
       url: "http://localhost:8000"
       resource:
         world_size: 1

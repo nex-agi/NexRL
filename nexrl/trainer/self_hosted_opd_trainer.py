@@ -150,7 +150,7 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
 
         backend = self._teacher_backend
 
-        if backend in ("nextrainer", "http"):
+        if backend in ("direct-zmq"):
             logger.info("[OPD] Initializing teacher workers...")
             try:
                 # Create teacher client if not already created
@@ -167,10 +167,14 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
 
                 config_dict = OmegaConf.to_container(self._teacher_init_config, resolve=True)
 
+                # Get the role from teacher config (defaults to "actor" for backward compatibility)
+                teacher_role = self._teacher_init_config.get("role", "")
+                assert teacher_role == "teacher", "Teacher role must be 'teacher'"
+
                 # Initialize teacher workers with config
                 try:
                     result = self._teacher_client.initialize_worker(
-                        config_dict=config_dict, role="actor"
+                        config_dict=config_dict, role=teacher_role
                     )
                     logger.info(f"[OPD] Teacher workers initialized: {result}")
                 except Exception as e:
@@ -200,10 +204,10 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
             logger.info("[OPD] Mock backend - skipping teacher worker initialization")
             self._teacher_initialized = True
         else:
-            logger.warning(
+            logger.error(
                 f"[OPD] Unknown backend {backend} - skipping teacher worker initialization"
             )
-            self._teacher_initialized = True
+            raise ValueError(f"Unknown backend {backend} - skipping teacher worker initialization")
 
     # ========================================================================
     # Batch Preparation (Override from SelfHostedTrainer)

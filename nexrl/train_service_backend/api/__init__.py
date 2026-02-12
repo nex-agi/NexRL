@@ -12,8 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""API components for train service backend."""
+"""API components for train service backend.
 
-from .client import HTTPTrainServiceClient
+This module provides the DirectZMQTrainServiceClient for interacting with the
+train service. It uses direct ZMQ connections to workers for data operations
+(update_actor, compute_log_prob, etc.), while using HTTP to API server for
+coordination (commands, health checks, worker registration).
+"""
 
-__all__ = ["HTTPTrainServiceClient"]
+from .direct_zmq_client import DirectZMQTrainServiceClient
+
+__all__ = ["DirectZMQTrainServiceClient"]

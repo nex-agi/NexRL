@@ -35,8 +35,10 @@ Requirements:
 
 import argparse
 import asyncio
+import gc
 import json
 import logging
+import logging.config
 import os
 import pickle
 import subprocess
@@ -62,8 +64,43 @@ from tensordict import TensorDict
 # Import DataProto from current project
 from ..utils.protocol import DataProto
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging (include timestamps) for both application logs and uvicorn access/error logs.
+# Note: uvicorn has its own loggers (uvicorn, uvicorn.error, uvicorn.access). We configure them here
+# and also pass the same config to uvicorn.run().
+LOGGING_CONFIG: dict[str, Any] = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s %(levelname)s:%(name)s:%(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+        "access": {
+            "format": "%(asctime)s %(levelname)s:%(name)s:%(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "class": "logging.StreamHandler",
+            "formatter": "access",
+            "stream": "ext://sys.stderr",
+        },
+    },
+    "root": {"level": "INFO", "handlers": ["default"]},
+    "loggers": {
+        "uvicorn": {"level": "INFO", "handlers": ["default"], "propagate": False},
+        "uvicorn.error": {"level": "INFO", "handlers": ["default"], "propagate": False},
+        "uvicorn.access": {"level": "INFO", "handlers": ["access"], "propagate": False},
+    },
+}
+
+logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
 # Global ZMQ coordinator instances - keyed by worker group identifier
@@ -194,12 +231,22 @@ def _stop_group_processor(identifier: str, join_timeout: float = 5.0) -> None:
 
 
 class APIZMQCoordinator:
-    """ZMQ-based coordinator for the standalone API server"""
+    """ZMQ-based coordinator for the standalone API server
 
-    def __init__(self, world_size: int, base_port: int = 5555, dispatch_mode: str = "broadcast"):
+    In the new direct communication architecture, the API server is coordination-only:
+    - PUB socket for broadcasting commands and execute signals to all workers
+    - PULL socket for collecting results from all workers
+    - NO data pushing - data goes directly from client to workers
+
+    Workers bind their own PULL sockets for data reception and report their
+    endpoints via /report_worker_endpoint. Direct clients connect to these
+    worker-reported endpoints.
+    """
+
+    def __init__(self, world_size: int, base_port: int = 5555, dispatch_mode: str = "scatter"):
         self.world_size = world_size
         self.base_port = base_port
-        self.dispatch_mode = dispatch_mode  # "broadcast" or "scatter"
+        self.dispatch_mode = dispatch_mode  # Always "scatter" in new architecture
         self.context = zmq.Context()
 
         # Reference counting for safe shutdown
@@ -207,7 +254,7 @@ class APIZMQCoordinator:
         self._ref_lock = threading.Lock()
         self._is_closing = False
 
-        # API Server: Publisher to broadcast commands to all workers (for simple commands)
+        # API Server: Publisher to broadcast commands AND execute signals to all workers
         self.publisher = self.context.socket(zmq.PUB)
         self.publisher.bind(f"tcp://*:{base_port}")
 
@@ -215,141 +262,177 @@ class APIZMQCoordinator:
         self.collector = self.context.socket(zmq.PULL)
         self.collector.bind(f"tcp://*:{base_port + 1}")
 
-        # API Server: Individual PUSH sockets for scatter-style data dispatching (only if scatter mode)
-        self.data_pushers = []
-        if self.dispatch_mode == "scatter":
-            for rank in range(world_size):
-                pusher = self.context.socket(zmq.PUSH)
-                pusher.bind(f"tcp://*:{base_port + 2 + rank}")
-                self.data_pushers.append(pusher)
-            logger.info(
-                f"API Server: ZMQ coordinator started on ports {base_port} (PUB), {base_port + 1} (PULL), and {base_port + 2} to {base_port + 1 + world_size} (PUSH for scatter data)"
-            )
-        else:
-            logger.info(
-                f"API Server: ZMQ coordinator started on ports {base_port} (PUB), {base_port + 1} (PULL) - broadcast mode"
-            )
+        # API Server: Result forwarder to push results to clients
+        # This creates a forwarding pipeline: Workers PUSH → API Server PULL → API Server PUSH → Client PULL
+        self.result_forwarder = self.context.socket(zmq.PUSH)
+        # Set send timeout to prevent blocking forever if no client is connected
+        # 5000ms timeout allows client time to connect but prevents indefinite hangs
+        self.result_forwarder.setsockopt(zmq.SNDTIMEO, 5000)
+        # Set high water mark to queue messages if client is slow
+        self.result_forwarder.setsockopt(zmq.SNDHWM, 10000)
+        self.result_forwarder.bind(f"tcp://*:{base_port + 2}")
 
-        logger.info(f"API Server: Dispatch mode set to '{self.dispatch_mode}'")
+        # Worker endpoints: populated by workers via /report_worker_endpoint
+        # Format: {rank: {"ip": "10.0.1.5", "port": 6000}, ...}
+        self.worker_endpoints: Dict[int, Dict[str, Any]] = {}
+        self._worker_endpoints_lock = threading.Lock()
+
+        # NOTE: data_pushers removed - API server no longer pushes data to workers.
+        # Data flows directly from DirectZMQTrainServiceClient to workers.
+        # This eliminates the API server as a data bottleneck (OOM, GIL, double serialization).
+
+        # Command result queue: forwarder stores command results here for command processor
+        self._command_result_queue: List[Dict[str, Any]] = []
+        self._command_result_lock = threading.Lock()
+
+        # Start background result forwarder thread for direct-zmq mode
+        self._forwarder_running = True
+        self._forwarder_thread = threading.Thread(
+            target=self._result_forwarder_loop, name=f"result-forwarder-{base_port}", daemon=True
+        )
+        self._forwarder_thread.start()
+
+        logger.info(
+            f"API Server: Coordination-only ZMQ coordinator started on ports "
+            f"{base_port} (PUB for commands/execute), {base_port + 1} (PULL for results from workers), "
+            f"{base_port + 2} (PUSH for results to clients)"
+        )
+        logger.info(
+            f"API Server: Dispatch mode set to '{self.dispatch_mode}' (direct client required)"
+        )
+        logger.info(f"API Server: Result forwarder thread started")
 
         # Give sockets time to bind
         time.sleep(0.5)
 
-    def broadcast_operation(self, operation: str, data: DataProto) -> DataProto:
-        """Dispatch operation to all worker ranks and collect results
+    def register_worker_endpoint(self, rank: int, worker_ip: str, data_port: int) -> None:
+        """Register a worker's data endpoint (called via /report_worker_endpoint)
 
-        Supports two modes:
-        - broadcast: Send same data to all workers (original behavior)
-        - scatter: Split data among workers (DP-style)
+        Workers call this after binding their PULL sockets to report their
+        IP and port so that direct clients can connect to them.
         """
-        # Acquire reference to prevent coordinator from being closed during operation
-        if not self._acquire_ref():
-            raise RuntimeError("Coordinator is closing, cannot perform operation")
-
-        try:
-            if self.dispatch_mode == "scatter":
-                return self._scatter_operation(operation, data)
-            else:
-                raise ValueError(f"Unknown dispatch mode: {self.dispatch_mode}")
-        except Exception as e:
-            logger.error(f"Error broadcasting operation: {e}")
-            raise e
-        finally:
-            self._release_ref()
-
-    def _broadcast_operation(self, operation: str, data: DataProto) -> DataProto:
-        """Broadcast same data to all workers (original behavior)"""
-
-        message = {"operation": operation, "data": data, "timestamp": time.time()}
-
-        # Broadcast to all workers via PUB socket
-        self.publisher.send_pyobj(message)
-        logger.info(f"Broadcasted {operation} operation with data to {self.world_size} workers")
-
-        # Collect results from all workers
-        results = []
-        for rank in range(self.world_size):
-            try:
-                # Set timeout to avoid hanging
-                self.collector.setsockopt(zmq.RCVTIMEO, 600000)  # 10 minutes
-                result = self.collector.recv_pyobj()
-                results.append(result)
-                logger.info(f"Received result from rank {result.get('rank', 'unknown')}")
-            except zmq.Again:
-                logger.error(f"Timeout waiting for result from rank {rank}")
-                results.append({"rank": rank, "success": False, "error": "Timeout"})
-            except Exception as e:
-                logger.error(f"Error receiving result from rank {rank}: {e}")
-                results.append({"rank": rank, "success": False, "error": str(e)})
-
-        # Check if all ranks succeeded
-        failed_ranks = [r for r in results if not r["success"]]
-        if failed_ranks:
-            logger.error(f"Operation failed on ranks: {[r['rank'] for r in failed_ranks]}")
-            raise RuntimeError(f"Distributed operation failed on {len(failed_ranks)} ranks")
-
-        # Sort results by rank to ensure correct order for concatenation
-        results.sort(key=lambda x: x["rank"])
-
-        # Extract DataProto results from each worker
-        result_data_protos = [r["result"] for r in results]
-
-        # Concatenate results from all workers
-        concatenated_result = DataProto.concat(result_data_protos)
-
-        logger.info(f"Concatenated results from {len(result_data_protos)} workers")
-        return concatenated_result
-
-    def _scatter_operation(self, operation: str, data: DataProto) -> DataProto:
-        """Scatter data chunks to individual workers (DP-style)"""
-        # Split data into chunks for DP-style dispatching
-        data_chunks = data.chunk(self.world_size)
-        logger.info(f"Split data into {len(data_chunks)} chunks for scatter dispatching")
-
-        # Send individual data chunks to each worker
-        for rank, data_chunk in enumerate(data_chunks):
-            message = {
-                "operation": operation,
-                "data": data_chunk,
-                "rank": rank,
-                "timestamp": time.time(),
+        with self._worker_endpoints_lock:
+            self.worker_endpoints[rank] = {
+                "ip": worker_ip,
+                "port": data_port,
             }
-            self.data_pushers[rank].send_pyobj(message)
-            logger.info(f"Sent {operation} operation with data chunk to rank {rank}")
+        logger.info(f"Registered worker endpoint: rank={rank}, {worker_ip}:{data_port}")
 
-        # Collect results from all workers
-        results = []
-        for rank in range(self.world_size):
+    def get_worker_endpoints(self) -> Dict[int, Dict[str, Any]]:
+        """Get all registered worker endpoints"""
+        with self._worker_endpoints_lock:
+            return dict(self.worker_endpoints)
+
+    def broadcast_execute(self, op_id: str) -> None:
+        """Broadcast execute signal for two-phase protocol
+
+        This is Phase 2 of the two-phase scatter protocol. After the direct client
+        has sent data chunks to all workers (Phase 1), it calls POST /execute
+        which triggers this method to broadcast the execute signal.
+
+        All workers receive this signal simultaneously via SUB socket and begin
+        processing their pending data for this op_id. This ensures NCCL timing
+        spread is minimal (<1 second) regardless of how long data streaming took.
+        """
+        message = {
+            "phase": "execute",
+            "op_id": op_id,
+            "timestamp": time.time(),
+        }
+        serialized = pickle.dumps(message)
+        self.publisher.send(serialized)
+        logger.info(f"Broadcast execute signal for op_id={op_id}")
+
+    def _result_forwarder_loop(self) -> None:
+        """Background thread that forwards direct-zmq operation results to clients
+
+        IMPORTANT: This forwarder only handles direct-zmq scatter operations (with op_id).
+        Regular command results are handled by _collect_results_from_workers() directly.
+
+        The forwarder creates a pipeline for direct-zmq operations:
+        Workers (PUSH) → API Server collector (PULL) → [forward if has op_id] → API Server forwarder (PUSH) → Client (PULL)
+                                                      → [pass through if command result] → _collect_results_from_workers()
+
+        Results with op_id (direct-zmq): Forwarded to client immediately
+        Results without op_id (commands): Buffered in queue for command processor
+        """
+        logger.info("Result forwarder loop started - forwarding direct-zmq results only")
+
+        # Set 1 second timeout for clean shutdown
+        self.collector.setsockopt(zmq.RCVTIMEO, 1000)
+
+        last_heartbeat = time.time()
+        heartbeat_interval = 10  # Log heartbeat every 10 seconds
+
+        receive_attempts = 0
+        while self._forwarder_running:
             try:
-                # Set timeout to avoid hanging
-                self.collector.setsockopt(zmq.RCVTIMEO, 600000)  # 10 minutes
+                # Periodic heartbeat to show forwarder is alive
+                if time.time() - last_heartbeat > heartbeat_interval:
+                    logger.info(
+                        f"Forwarder heartbeat: alive and polling (queue size: {len(self._command_result_queue)}, receive attempts: {receive_attempts})"
+                    )
+                    last_heartbeat = time.time()
+                    receive_attempts = 0  # Reset counter after heartbeat
+
+                # Receive result from worker (using timeout, not NOBLOCK)
+                receive_attempts += 1
                 result = self.collector.recv_pyobj()
-                results.append(result)
-                logger.info(f"Received result from rank {result.get('rank', 'unknown')}")
+
+                # Log that we received something
+                logger.info(f"Forwarder received a result (type: {type(result)})")
+
+                # Check if this is a direct-zmq operation result (has op_id) or command result
+                op_id = result.get("op_id")
+                rank = result.get("rank", "unknown")
+
+                logger.info(f"Result analysis: op_id={op_id}, rank={rank}, has_op_id={bool(op_id)}")
+
+                if op_id:
+                    # Direct-zmq operation result: forward to client
+                    logger.info(
+                        f"Attempting to forward direct-zmq result from rank {rank} for op_id={op_id}"
+                    )
+                    try:
+                        self.result_forwarder.send_pyobj(result)
+                        logger.info(
+                            f"✓ Forwarded direct-zmq result from rank {rank} for op_id={op_id}"
+                        )
+                    except zmq.Again:
+                        # Send timed out - no client connected or client too slow
+                        logger.warning(
+                            f"⚠ Send timeout forwarding result from rank {rank} for op_id={op_id}. "
+                            f"Client may not be connected to result forwarder port."
+                        )
+                else:
+                    # Command result: store in queue for command processor to collect
+                    with self._command_result_lock:
+                        self._command_result_queue.append(result)
+                    logger.info(
+                        f"Buffered command result from rank {rank} (queue size: {len(self._command_result_queue)})"
+                    )
+
             except zmq.Again:
-                logger.error(f"Timeout waiting for result from rank {rank}")
-                results.append({"rank": rank, "success": False, "error": "Timeout"})
+                # Timeout - normal, just continue to check _forwarder_running flag
+                continue
+            except AttributeError as e:
+                # This might happen if result.get() fails
+                logger.error(
+                    f"AttributeError in forwarder (bad result format?): {e}", exc_info=True
+                )
+                logger.error(
+                    f"Result that caused error: {result if 'result' in locals() else 'not yet assigned'}"
+                )
+                continue
             except Exception as e:
-                logger.error(f"Error receiving result from rank {rank}: {e}")
-                results.append({"rank": rank, "success": False, "error": str(e)})
+                if self._forwarder_running:
+                    logger.error(f"Unexpected error in result forwarder loop: {e}", exc_info=True)
+                    # Don't break, just continue to be resilient
+                    continue
+                else:
+                    break
 
-        # Check if all ranks succeeded
-        failed_ranks = [r for r in results if not r["success"]]
-        if failed_ranks:
-            logger.error(f"Operation failed on ranks: {[r['rank'] for r in failed_ranks]}")
-            raise RuntimeError(f"Distributed operation failed on {len(failed_ranks)} ranks")
-
-        # Sort results by rank to ensure correct order for concatenation
-        results.sort(key=lambda x: x["rank"])
-
-        # Extract DataProto results from each worker
-        result_data_protos = [r["result"] for r in results]
-
-        # Concatenate results from all workers
-        concatenated_result = DataProto.concat(result_data_protos)
-
-        logger.info(f"Concatenated results from {len(result_data_protos)} workers")
-        return concatenated_result
+        logger.info("Result forwarder loop stopped")
 
     def broadcast_command(self, command: str, **kwargs) -> List[Dict[str, Any]]:
         """Broadcast a simple command to all workers and collect acknowledgments"""
@@ -364,28 +447,119 @@ class APIZMQCoordinator:
                 "kwargs": kwargs,
                 "timestamp": time.time(),
             }
-            self.publisher.send_pyobj(message)
+            # Serialize manually and release GIL
+            serialized = pickle.dumps(message)
+            time.sleep(0)  # Release GIL to allow heartbeat processing
+            self.publisher.send(serialized)
 
             logger.info(f"Broadcasted command: {command} to {self.world_size} workers")
 
-            # Collect acknowledgments from all workers
-            results = []
-            for rank in range(self.world_size):
-                try:
-                    self.collector.setsockopt(zmq.RCVTIMEO, 600000)  # 10 minutes for initialization
-                    result = self.collector.recv_pyobj()
-                    results.append(result)
-                    logger.info(f"Received ack from rank {result.get('rank', 'unknown')}")
-                except zmq.Again:
-                    logger.error(f"Timeout waiting for ack from rank {rank} for command {command}")
-                    results.append({"rank": rank, "success": False, "error": "Timeout"})
-                except Exception as e:
-                    logger.error(f"Error receiving ack from rank {rank} for command {command}: {e}")
-                    results.append({"rank": rank, "success": False, "error": str(e)})
+            # Collect acknowledgments from all workers using improved collection logic
+            # Note: broadcast_command doesn't raise on failures, just returns the results
+            results = self._collect_results_from_workers(
+                operation_name=f"command_{command}",
+                total_timeout_ms=3600000,  # 60 minutes total
+                per_recv_timeout_ms=600000,  # 10 minutes per recv attempt
+            )
 
             return results
         finally:
             self._release_ref()
+
+    def _collect_results_from_workers(
+        self,
+        operation_name: str,
+        total_timeout_ms: int = 3600000,
+        per_recv_timeout_ms: int = 600000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Collect results from all workers with improved timeout and retry logic.
+
+        Args:
+            operation_name: Name of the operation for logging
+            total_timeout_ms: Total timeout in milliseconds (default: 10 minutes)
+            per_recv_timeout_ms: Timeout for each recv attempt in milliseconds (default: 30 seconds)
+            raise_on_failure: Whether to raise RuntimeError on failures (default: True)
+
+        Returns:
+            List of result dictionaries sorted by rank
+
+        Raises:
+            RuntimeError: If raise_on_failure=True and total timeout is reached or some ranks failed with errors
+        """
+        start_time = time.time() * 1000  # Convert to milliseconds
+        results_by_rank: Dict[int, Any] = {}  # Use dict to deduplicate by rank
+
+        logger.info(
+            f"Collecting results for {operation_name} from {self.world_size} workers, total timeout: {total_timeout_ms}ms"
+        )
+
+        while len(results_by_rank) < self.world_size:
+            # Calculate remaining time
+            elapsed = time.time() * 1000 - start_time
+            remaining_total = total_timeout_ms - elapsed
+
+            if remaining_total <= 0:
+                # Total timeout reached
+                missing_ranks = set(range(self.world_size)) - set(results_by_rank.keys())
+                logger.error(
+                    f"Total timeout ({total_timeout_ms}ms) reached for {operation_name}. "
+                    f"Received {len(results_by_rank)}/{self.world_size} results. "
+                    f"Missing ranks: {sorted(missing_ranks)}"
+                )
+                raise RuntimeError(
+                    f"Total timeout ({total_timeout_ms}ms) reached for {operation_name}. Received {len(results_by_rank)}/{self.world_size} results. Missing ranks: {sorted(missing_ranks)}"
+                )
+
+            # First, check if forwarder has buffered any command results for us
+            result = None
+            if hasattr(self, "_command_result_queue"):
+                with self._command_result_lock:
+                    if self._command_result_queue:
+                        result = self._command_result_queue.pop(0)
+                        logger.debug(
+                            f"Retrieved command result from forwarder queue (queue size: {len(self._command_result_queue)})"
+                        )
+
+            # If no buffered result, wait a bit and try again (don't block on socket since forwarder handles it)
+            if result is None:
+                time.sleep(0.1)  # 100ms poll interval
+                continue
+
+            try:
+                # Extract rank from result
+                rank = result.get("rank", None)
+                if rank is None:
+                    logger.error(
+                        f"Received result without rank field for {operation_name}: {result}"
+                    )
+                    continue
+
+                # Check if this is a duplicate
+                if rank in results_by_rank:
+                    logger.error(
+                        f"Received duplicate result from rank {rank} for {operation_name}, "
+                        f"ignoring (keeping first result)"
+                    )
+                    continue
+
+                # Store the result
+                results_by_rank[rank] = result
+                logger.info(
+                    f"Received result from rank {rank} for {operation_name} "
+                    f"({len(results_by_rank)}/{self.world_size})"
+                )
+
+                # Release GIL after each result to allow heartbeat processing
+                time.sleep(0)
+            except Exception as e:
+                # Real error during processing - log but continue trying to collect other results
+                logger.error(f"Error receiving result for {operation_name}: {e}", exc_info=True)
+                raise e
+
+        # Convert to sorted list
+        results = [results_by_rank[rank] for rank in sorted(results_by_rank.keys())]
+        return results
 
     def _acquire_ref(self) -> bool:
         """Acquire a reference to this coordinator. Returns False if closing."""
@@ -414,6 +588,13 @@ class APIZMQCoordinator:
         with self._ref_lock:
             self._is_closing = True
 
+        # Stop forwarder thread
+        if hasattr(self, "_forwarder_running"):
+            self._forwarder_running = False
+            if hasattr(self, "_forwarder_thread"):
+                self._forwarder_thread.join(timeout=5.0)
+                logger.info("Result forwarder thread stopped")
+
         # Wait for active operations to complete (with timeout)
         max_wait_time = 60  # 60 seconds
         wait_start = time.time()
@@ -430,9 +611,9 @@ class APIZMQCoordinator:
             self.publisher.close()
         if hasattr(self, "collector"):
             self.collector.close()
-        if hasattr(self, "data_pushers") and self.data_pushers:
-            for pusher in self.data_pushers:
-                pusher.close()
+        if hasattr(self, "result_forwarder"):
+            self.result_forwarder.close()
+        # NOTE: data_pushers removed - API server is coordination-only
 
         # Terminate context
         self.context.term()
@@ -442,12 +623,8 @@ class APIZMQCoordinator:
 from ..utils.core_utils import (
     CheckpointRequest,
     ConvertCheckpointRequest,
-    DataProtoRequest,
-    DataProtoResponse,
-    NumpyData,
     SaveCheckpointRequest,
     StatusResponse,
-    TensorData,
 )
 
 
@@ -457,7 +634,9 @@ def monitor_heartbeats():
     global group_stop_events, group_processor_threads, group_operation_queues
 
     logger.info("Starting heartbeat monitoring thread")
-    HEARTBEAT_TIMEOUT = 120  # 120 seconds (2 minutes) - increased to handle long operations
+    # Increased to 5 minutes to handle GIL contention during large data operations
+    # (pickle deserialization and tensor concatenation can hold the GIL for extended periods)
+    HEARTBEAT_TIMEOUT = 300  # 300 seconds (5 minutes)
     CHECK_INTERVAL = 10  # Check every 10 seconds
 
     while not heartbeat_monitor_stop_event.is_set():
@@ -465,16 +644,20 @@ def monitor_heartbeats():
             current_time = time.time()
             stale_groups = []
 
+            # Copy heartbeat timestamps under lock to minimize lock hold time
             with heartbeat_lock:
-                for identifier, last_heartbeat in list(heartbeat_timestamps.items()):
-                    time_since_heartbeat = current_time - last_heartbeat
+                heartbeat_copy = heartbeat_timestamps.copy()
 
-                    if time_since_heartbeat > HEARTBEAT_TIMEOUT:
-                        logger.warning(
-                            f"Worker group '{identifier}' heartbeat is stale "
-                            f"({time_since_heartbeat:.1f}s since last heartbeat). Marking for removal."
-                        )
-                        stale_groups.append(identifier)
+            # Check for stale heartbeats without holding the lock
+            for identifier, last_heartbeat in heartbeat_copy.items():
+                time_since_heartbeat = current_time - last_heartbeat
+
+                if time_since_heartbeat > HEARTBEAT_TIMEOUT:
+                    logger.warning(
+                        f"Worker group '{identifier}' heartbeat is stale "
+                        f"({time_since_heartbeat:.1f}s since last heartbeat). Marking for removal."
+                    )
+                    stale_groups.append(identifier)
 
             # Remove stale worker groups
             for identifier in stale_groups:
@@ -576,10 +759,12 @@ def process_parallel_group_operations(identifier: str):
                 assert coordinator is not None
                 result = coordinator.broadcast_command(**queued_op.data)  # type: ignore
             elif queued_op.operation_type == "data_operation":
-                assert coordinator is not None
-                operation = queued_op.data["operation"]
-                data_proto = queued_op.data["data_proto"]
-                result = coordinator.broadcast_operation(operation, data_proto)  # type: ignore
+                # Data operations are no longer supported via API server
+                # Use DirectZMQTrainServiceClient instead
+                raise RuntimeError(
+                    "Data operations are no longer supported via API server. "
+                    "Use DirectZMQTrainServiceClient (backend='direct-zmq') instead."
+                )
             else:
                 raise ValueError(f"Unknown operation type: {queued_op.operation_type}")
 
@@ -663,7 +848,16 @@ async def submit_queued_operation(
     Raises:
         RuntimeError: If operation fails
     """
-    global group_operation_queues
+    global group_operation_queues, zmq_coordinators
+
+    # Check if coordinator exists BEFORE starting processor thread
+    # This prevents race conditions where heartbeat timeout removes the coordinator
+    # but operations are still submitted
+    if identifier not in zmq_coordinators:
+        raise RuntimeError(
+            f"Worker group '{identifier}' not found. The group may have been removed due to "
+            f"heartbeat timeout. Workers need to re-register via /register_worker_group."
+        )
 
     _ensure_group_processor(identifier)
 
@@ -704,29 +898,6 @@ async def submit_queued_operation(
         raise RuntimeError(f"Queued operation failed: {queued_op.error}")
 
     return queued_op.result
-
-
-def convert_request_to_data_proto(data: DataProtoRequest) -> DataProto:
-    """Convert DataProtoRequest to DataProto for ZMQ transmission"""
-    tensor_dict = None
-    tensors = {}
-    if data.batch:
-        for key, tensor_data in data.batch.items():
-            tensors[key] = tensor_data.to_tensor()
-
-    if tensors:
-        first_tensor = next(iter(tensors.values()))
-        batch_size = first_tensor.shape[:1]
-        tensor_dict = TensorDict(source=tensors, batch_size=batch_size)
-
-    non_tensors = {}
-    if data.non_tensor_batch:
-        for key, numpy_data in data.non_tensor_batch.items():
-            non_tensors[key] = numpy_data.to_numpy()
-
-    return DataProto(
-        batch=tensor_dict, non_tensor_batch=non_tensors, meta_info=data.meta_info or {}
-    )
 
 
 # Create FastAPI app
@@ -776,21 +947,25 @@ async def get_models():
     models_info = {}
     current_time = time.time()
 
+    # Copy heartbeat timestamps under lock to minimize lock hold time
     with heartbeat_lock:
-        for identifier, coordinator in zmq_coordinators.items():
-            last_heartbeat = heartbeat_timestamps.get(identifier, None)
-            time_since_heartbeat = current_time - last_heartbeat if last_heartbeat else None
+        heartbeat_copy = heartbeat_timestamps.copy()
 
-            models_info[identifier] = {
-                "world_size": coordinator.world_size,
-                "dispatch_mode": coordinator.dispatch_mode,
-                "base_port": coordinator.base_port,
-                "last_heartbeat": last_heartbeat,
-                "time_since_heartbeat": time_since_heartbeat,
-                "healthy": time_since_heartbeat is None
-                or time_since_heartbeat < 120,  # Match HEARTBEAT_TIMEOUT
-                "active_operations": coordinator._ref_count,
-            }
+    # Process coordinator info without holding the lock
+    for identifier, coordinator in zmq_coordinators.items():
+        last_heartbeat = heartbeat_copy.get(identifier, None)
+        time_since_heartbeat = current_time - last_heartbeat if last_heartbeat else None
+
+        models_info[identifier] = {
+            "world_size": coordinator.world_size,
+            "dispatch_mode": coordinator.dispatch_mode,
+            "base_port": coordinator.base_port,
+            "last_heartbeat": last_heartbeat,
+            "time_since_heartbeat": time_since_heartbeat,
+            "healthy": time_since_heartbeat is None
+            or time_since_heartbeat < 300,  # Match HEARTBEAT_TIMEOUT
+            "active_operations": coordinator._ref_count,
+        }
 
     return {
         "status": "success",
@@ -847,6 +1022,18 @@ class RegisterWorkerGroupRequest(BaseModel):
     identifier: Optional[str] = None
     dispatch_mode: Optional[str] = None
     api_server_url: Optional[str] = None
+
+
+class InitializeWorkersRequest(BaseModel):
+    """Initialize workers request model"""
+
+    config_path: Optional[str] = None
+    role: str = "actor"
+    config_dict: Optional[Dict[str, Any]] = None
+    identifier: Optional[str] = None
+    world_size: Optional[int] = None
+    zmq_base_port: Optional[int] = None
+    dispatch_mode: Optional[str] = None
 
 
 @app.post("/register_worker_group")
@@ -927,27 +1114,30 @@ async def register_worker_group(request: RegisterWorkerGroupRequest):
 
 
 @app.get("/get_worker_group_info")
-async def get_worker_group_info_endpoint(identifier: str):
+async def get_worker_group_info_endpoint(identifier: Optional[str] = None):
     """Get connection information for a registered worker group
 
-    This endpoint is called by workers to get their ZMQ connection details.
+    This endpoint is called by workers or direct clients to get ZMQ connection details.
+    Direct clients use this to establish direct ZMQ connections to workers.
 
     Args:
-        identifier: Worker group identifier
+        identifier: Worker group identifier. If None, returns info for the first/only group.
 
     Returns:
-        Connection information including ZMQ ports
+        Connection information including ZMQ ports and API server host for direct connections
     """
     global zmq_coordinators
 
     try:
-        if identifier not in zmq_coordinators:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Worker group '{identifier}' not found. Please register first via /register_worker_group",
-            )
+        # Use get_coordinator to handle None identifier (returns first/only group)
+        zmq_coordinator = get_coordinator(identifier)
 
-        zmq_coordinator = zmq_coordinators[identifier]
+        # Get the actual identifier from coordinator if it was None
+        if identifier is None:
+            identifier = next(iter(zmq_coordinators.keys()))
+
+        # Get worker endpoints for direct client connections
+        worker_endpoints = zmq_coordinator.get_worker_endpoints()
 
         return {
             "status": "success",
@@ -955,6 +1145,7 @@ async def get_worker_group_info_endpoint(identifier: str):
             "world_size": zmq_coordinator.world_size,
             "zmq_base_port": zmq_coordinator.base_port,
             "dispatch_mode": zmq_coordinator.dispatch_mode,
+            "worker_endpoints": worker_endpoints,  # For direct client connections
         }
 
     except HTTPException:
@@ -962,6 +1153,109 @@ async def get_worker_group_info_endpoint(identifier: str):
     except Exception as e:
         logger.error(f"Failed to get worker group info: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get worker group info: {str(e)}")
+
+
+class ReportWorkerEndpointRequest(BaseModel):
+    """Request model for reporting worker endpoint"""
+
+    identifier: str
+    rank: int
+    worker_ip: str
+    data_port: int
+
+
+@app.post("/report_worker_endpoint")
+async def report_worker_endpoint(request: ReportWorkerEndpointRequest):
+    """Workers report their data endpoint after binding PULL socket
+
+    In the new direct communication architecture, workers bind their own PULL
+    sockets for data reception. After binding, each worker calls this endpoint
+    to report its IP and port to the API server.
+
+    Direct clients query /get_worker_group_info to get these endpoints and
+    establish direct ZMQ connections to workers.
+
+    Args:
+        request: Contains identifier, rank, worker_ip, and data_port
+
+    Returns:
+        Success status
+    """
+    global zmq_coordinators
+
+    try:
+        if request.identifier not in zmq_coordinators:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Worker group '{request.identifier}' not found. Register the group first.",
+            )
+
+        zmq_coordinator = zmq_coordinators[request.identifier]
+        zmq_coordinator.register_worker_endpoint(
+            rank=request.rank, worker_ip=request.worker_ip, data_port=request.data_port
+        )
+
+        return {
+            "status": "success",
+            "message": f"Worker {request.rank} endpoint registered: {request.worker_ip}:{request.data_port}",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to report worker endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to report worker endpoint: {str(e)}")
+
+
+class ExecuteRequest(BaseModel):
+    """Request model for execute signal (two-phase protocol)"""
+
+    op_id: str
+    identifier: str
+
+
+@app.post("/execute")
+async def execute_operation(request: ExecuteRequest):
+    """Broadcast execute signal to trigger pending operation on all workers
+
+    This is Phase 2 of the two-phase scatter protocol:
+
+    Phase 1: Direct client sends data chunks to workers (streaming, memory-efficient)
+             Workers store data in pending_ops dict, do NOT execute yet
+
+    Phase 2: Direct client calls this endpoint to broadcast execute signal
+             All workers receive signal simultaneously via SUB socket
+             Workers lookup op_id in pending_ops and begin execution together
+             NCCL timing spread is minimized (<1 second)
+
+    Args:
+        request: Contains op_id and identifier
+
+    Returns:
+        Success status
+    """
+    global zmq_coordinators
+
+    try:
+        if request.identifier not in zmq_coordinators:
+            raise HTTPException(
+                status_code=404, detail=f"Worker group '{request.identifier}' not found."
+            )
+
+        zmq_coordinator = zmq_coordinators[request.identifier]
+        zmq_coordinator.broadcast_execute(request.op_id)
+
+        return {
+            "status": "success",
+            "op_id": request.op_id,
+            "message": f"Execute signal broadcast to worker group '{request.identifier}'",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to broadcast execute signal: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to broadcast execute signal: {str(e)}")
 
 
 class LaunchWorkersRequest(BaseModel):
@@ -1056,26 +1350,24 @@ async def launch_workers(request: LaunchWorkersRequest):
 
 
 @app.post("/initialize")
-async def initialize_workers(
-    config_path: Optional[str] = None,
-    role: str = "actor",
-    config_dict: Optional[Dict[str, Any]] = None,
-    identifier: Optional[str] = None,
-):
+async def initialize_workers(request: InitializeWorkersRequest):
     """Initialize worker processes with configuration
 
     This endpoint assumes workers are already connected (coordinator exists).
     For new worker groups, use /register_worker_group first.
 
     Args:
-        config_path: Path to YAML configuration file
-        role: Worker role (e.g., 'actor', 'critic', 'reward')
-        config_dict: Optional dictionary configuration (overrides config_path)
-        identifier: Worker group identifier. If None, uses the only/first group.
+        request: Initialization request with config and identifier
     """
     global zmq_coordinators
 
     try:
+        # Extract parameters from request
+        config_path = request.config_path
+        role = request.role
+        config_dict = request.config_dict
+        identifier = request.identifier
+
         # Get coordinator
         zmq_coordinator = get_coordinator(identifier)
 
@@ -1154,162 +1446,6 @@ async def init_model(identifier: Optional[str] = None):
     except Exception as e:
         logger.error(f"Failed to initialize models: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to initialize models: {str(e)}")
-
-
-@app.post("/update_actor", response_model=DataProtoResponse)
-async def update_actor(data: DataProtoRequest, identifier: Optional[str] = None):
-    """Update actor policy on all workers
-
-    This operation requires GPU access and will be queued if GPU is occupied by another worker group.
-
-    Args:
-        data: Data to send to workers
-        identifier: Worker group identifier. If None, uses the only/first group.
-    """
-    try:
-        # Get coordinator to validate identifier
-        get_coordinator(identifier)
-
-        # Use identifier from coordinator if not explicitly provided
-        if identifier is None:
-            identifier = next(iter(zmq_coordinators.keys()))
-
-        # Convert request to DataProto
-        data_proto = convert_request_to_data_proto(data)
-
-        # Queue the data operation (requires GPU)
-        result_data_proto = await submit_queued_operation(
-            identifier=identifier,
-            operation_type="data_operation",
-            data={"operation": "update_actor", "data_proto": data_proto},
-            requires_gpu=True,
-        )
-
-        return DataProtoResponse.from_data_proto(result_data_proto)
-
-    except Exception as e:
-        logger.error(f"Failed to update actor: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to update actor: {str(e)}")
-
-
-@app.post("/compute_log_prob", response_model=DataProtoResponse)
-async def compute_log_prob(data: DataProtoRequest, identifier: Optional[str] = None):
-    """Compute log probabilities
-
-    This operation requires GPU access and will be queued if GPU is occupied by another worker group.
-
-    Args:
-        data: Data to send to workers
-        identifier: Worker group identifier. If None, uses the only/first group.
-    """
-    try:
-        # Get coordinator to validate identifier
-        get_coordinator(identifier)
-
-        # Use identifier from coordinator if not explicitly provided
-        if identifier is None:
-            identifier = next(iter(zmq_coordinators.keys()))
-
-        # Convert request to DataProto
-        data_proto = convert_request_to_data_proto(data)
-
-        # Queue the data operation (requires GPU)
-        result_data_proto = await submit_queued_operation(
-            identifier=identifier,
-            operation_type="data_operation",
-            data={"operation": "compute_log_prob", "data_proto": data_proto},
-            requires_gpu=True,
-        )
-
-        return DataProtoResponse.from_data_proto(result_data_proto)
-
-    except Exception as e:
-        logger.error(f"Failed to compute log prob: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to compute log prob: {str(e)}")
-
-
-@app.post("/update_actor_with_distillation", response_model=DataProtoResponse)
-async def update_actor_with_distillation(data: DataProtoRequest, identifier: Optional[str] = None):
-    """Update actor using on-policy distillation with reverse KL loss
-
-    This operation requires GPU access and will be queued if GPU is occupied by another worker group.
-
-    Args:
-        data: Data to send to workers (should include teacher_logits)
-        identifier: Worker group identifier. If None, uses the only/first group.
-    """
-    try:
-        logger.info(
-            f"[update_actor_with_distillation] Received request with identifier={identifier}"
-        )
-        # Get coordinator to validate identifier
-        get_coordinator(identifier)
-
-        # Use identifier from coordinator if not explicitly provided
-        if identifier is None:
-            identifier = next(iter(zmq_coordinators.keys()))
-
-        logger.info(f"[update_actor_with_distillation] Using identifier: {identifier}")
-
-        # Convert request to DataProto
-        data_proto = convert_request_to_data_proto(data)
-        logger.info(
-            f"[update_actor_with_distillation] Data converted to DataProto, batch_size={len(data_proto)}"
-        )
-
-        # Queue the data operation (requires GPU)
-        logger.info(f"[update_actor_with_distillation] Submitting queued operation...")
-        result_data_proto = await submit_queued_operation(
-            identifier=identifier,
-            operation_type="data_operation",
-            data={"operation": "update_actor_with_distillation", "data_proto": data_proto},
-            requires_gpu=True,
-        )
-
-        logger.info(f"[update_actor_with_distillation] Operation completed, converting response")
-        return DataProtoResponse.from_data_proto(result_data_proto)
-
-    except Exception as e:
-        logger.error(f"Failed to update actor with distillation: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update actor with distillation: {str(e)}"
-        )
-
-
-@app.post("/compute_ref_log_prob", response_model=DataProtoResponse)
-async def compute_ref_log_prob(data: DataProtoRequest, identifier: Optional[str] = None):
-    """Compute reference log probabilities
-
-    This operation requires GPU access and will be queued if GPU is occupied by another worker group.
-
-    Args:
-        data: Data to send to workers
-        identifier: Worker group identifier. If None, uses the only/first group.
-    """
-    try:
-        # Get coordinator to validate identifier
-        get_coordinator(identifier)
-
-        # Use identifier from coordinator if not explicitly provided
-        if identifier is None:
-            identifier = next(iter(zmq_coordinators.keys()))
-
-        # Convert request to DataProto
-        data_proto = convert_request_to_data_proto(data)
-
-        # Queue the data operation (requires GPU)
-        result_data_proto = await submit_queued_operation(
-            identifier=identifier,
-            operation_type="data_operation",
-            data={"operation": "compute_ref_log_prob", "data_proto": data_proto},
-            requires_gpu=True,
-        )
-
-        return DataProtoResponse.from_data_proto(result_data_proto)
-
-    except Exception as e:
-        logger.error(f"Failed to compute ref log prob: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to compute ref log prob: {str(e)}")
 
 
 @app.post("/load_checkpoint")
@@ -1869,7 +2005,9 @@ def main():
     logger.info(f"Starting standalone API server on {args.host}:{args.port}")
 
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        uvicorn.run(
+            app, host=args.host, port=args.port, log_level="info", log_config=LOGGING_CONFIG
+        )
     except KeyboardInterrupt:
         logger.info("Shutting down API server...")
     finally:
