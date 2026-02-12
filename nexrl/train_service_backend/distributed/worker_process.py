@@ -171,7 +171,19 @@ def get_worker_class(backend):
 
 
 class WorkerZMQCoordinator:
-    """ZMQ-based coordinator for worker processes"""
+    """ZMQ-based coordinator for worker processes
+
+    Direct communication architecture with ACK-based two-phase protocol:
+    - Workers BIND PULL sockets for data reception (clients connect to them)
+    - Workers report their IP:port to API server for client discovery
+    - Two-phase protocol with ACK prevents race conditions:
+      1. Client → Rank 0: send data (PUSH socket)
+      2. Rank 0 → Client: send ACK (confirms receipt)
+      3. Client → All workers: broadcast execute (PUB/SUB via API)
+      4. Workers: participate in NCCL scatter/gather
+
+    This eliminates API server data bottleneck while ensuring correct ordering.
+    """
 
     def __init__(
         self,
@@ -204,6 +216,10 @@ class WorkerZMQCoordinator:
         self.heartbeat_thread: Optional[threading.Thread] = None
         self.heartbeat_stop_event = threading.Event()
 
+        # Two-phase protocol: pending operations waiting for execute signal
+        # Format: {op_id: {"operation": str, "data": DataProto, "use_nccl_scatter": bool}, ...}
+        self.pending_ops: dict[str, dict[str, Any]] = {}
+
         # Update API server URL to use master address if it's using localhost
         if "localhost" in normalized_url or "127.0.0.1" in normalized_url:
             # Replace localhost/127.0.0.1 with master address for multi-node support
@@ -220,7 +236,7 @@ class WorkerZMQCoordinator:
 
         self.base_port = base_port
 
-        # Worker: Subscriber to receive commands from API server (for simple commands)
+        # Worker: Subscriber to receive commands AND execute signals from API server
         self.subscriber = self.context.socket(zmq.SUB)
         self.subscriber.connect(f"tcp://{self.master_addr}:{base_port}")
         self.subscriber.setsockopt(zmq.SUBSCRIBE, b"")  # Subscribe to all messages
@@ -229,25 +245,125 @@ class WorkerZMQCoordinator:
         self.pusher = self.context.socket(zmq.PUSH)
         self.pusher.connect(f"tcp://{self.master_addr}:{base_port + 1}")
 
-        # Worker: PULL socket to receive individual data chunks for DP-style operations
+        # Worker: BIND PULL socket for data reception (direct from client)
+        # In the new architecture, workers bind and clients connect (reversed from old)
+        self.data_port = self._get_data_port()
+        self.worker_ip = self._get_own_ip()
         self.data_puller = self.context.socket(zmq.PULL)
-        self.data_puller.connect(f"tcp://{self.master_addr}:{base_port + 2 + rank}")
+        self.data_puller.bind(f"tcp://*:{self.data_port}")
 
         self.backend = backend
 
         logger.info(
-            f"Rank {rank}: ZMQ coordinator connected to {self.master_addr}:{base_port} (SUB), {base_port + 1} (PUSH), and {base_port + 2 + rank} (PULL for DP data)"
+            f"Rank {rank}: ZMQ coordinator - SUB connected to {self.master_addr}:{base_port}, "
+            f"PUSH connected to {self.master_addr}:{base_port + 1}, "
+            f"PULL bound on *:{self.data_port}"
         )
         logger.info(
             f"Rank {rank}: Worker group identifier: {self.identifier}, dispatch mode: {self.dispatch_mode}"
         )
 
-        # Give sockets time to connect
+        # Give sockets time to connect/bind
         time.sleep(1)
+
+        # Report our data endpoint to API server so direct clients can find us
+        self._report_endpoint_to_api_server()
 
         # Start heartbeat thread for rank 0
         if rank == 0 and self.api_server_url and self.identifier:
             self._start_heartbeat()
+
+    def _get_data_port(self) -> int:
+        """Get the data port for this worker (fixed range based on rank)
+
+        Uses NEXRL_WORKER_DATA_BASE_PORT env var (default: 6000) + rank.
+        """
+        base = int(os.environ.get("NEXRL_WORKER_DATA_BASE_PORT", "6000"))
+        return base + self.rank
+
+    def _get_own_ip(self) -> str:
+        """Get this worker's externally reachable IP address
+
+        Priority:
+        1. NEXRL_WORKER_IP environment variable (for K8s pod IP injection)
+        2. IP address from socket connection to API server (most reliable for cross-node)
+        3. Resolved IP from hostname
+        4. Fallback to localhost
+
+        NOTE: Using hostname instead of IP can cause cross-node connection issues
+        when nodes are on different subnets and DNS resolution differs between nodes.
+        """
+        import socket as sock_module
+        from urllib.parse import urlparse
+
+        # Check for explicit override (K8s downward API: status.podIP)
+        explicit_ip = os.environ.get("NEXRL_WORKER_IP")
+        if explicit_ip:
+            logger.info(f"Rank {self.rank}: Using explicit worker IP from env: {explicit_ip}")
+            return explicit_ip
+
+        # Best method: Get our IP by connecting to the API server
+        # This gives us the IP that's routable from the API server's network
+        if self.api_server_url:
+            try:
+                parsed = urlparse(self.api_server_url)
+                api_host = parsed.hostname
+                api_port = parsed.port or 80
+
+                # Create a temporary socket to API server to discover our IP
+                with sock_module.socket(sock_module.AF_INET, sock_module.SOCK_DGRAM) as s:
+                    # UDP socket doesn't actually connect, just sets destination for getsockname
+                    s.connect((api_host, api_port))
+                    local_ip = s.getsockname()[0]
+                    logger.info(
+                        f"Rank {self.rank}: Using routable IP from API server connection: {local_ip}"
+                    )
+                    return local_ip
+            except Exception as e:
+                logger.warning(
+                    f"Rank {self.rank}: Could not determine IP from API server connection: {e}"
+                )
+
+        # Fallback: Try to get IP from hostname
+        try:
+            hostname = sock_module.gethostname()
+            ip_addr = sock_module.gethostbyname(hostname)
+            logger.info(
+                f"Rank {self.rank}: Using IP from hostname resolution: {ip_addr} (hostname={hostname})"
+            )
+            return ip_addr
+        except sock_module.error:
+            logger.warning(f"Rank {self.rank}: Could not resolve hostname, using localhost")
+            return "localhost"
+
+    def _report_endpoint_to_api_server(self) -> None:
+        """Report our data endpoint to API server
+
+        After binding the PULL socket, report our IP and port to the API server
+        so that direct clients can discover and connect to us.
+        """
+        if not self.identifier:
+            logger.warning(f"Rank {self.rank}: No identifier, skipping endpoint reporting")
+            return
+
+        try:
+            response = requests.post(
+                f"{self.api_server_url}/report_worker_endpoint",
+                json={
+                    "identifier": self.identifier,
+                    "rank": self.rank,
+                    "worker_ip": self.worker_ip,
+                    "data_port": self.data_port,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            logger.info(
+                f"Rank {self.rank}: Reported endpoint {self.worker_ip}:{self.data_port} to API server"
+            )
+        except Exception as e:
+            logger.error(f"Rank {self.rank}: Failed to report endpoint to API server: {e}")
+            raise
 
     def _register_with_api_server(self) -> tuple:
         """Register with API server and get ZMQ port allocation
@@ -331,7 +447,7 @@ class WorkerZMQCoordinator:
                             return base_port, identifier, dispatch_mode
                         elif response.status_code == 404:
                             # Group not registered yet, wait and retry
-                            logger.debug(
+                            logger.info(
                                 f"Rank {self.rank}: Worker group '{self.identifier}' not registered yet (attempt {attempt + 1}/{max_retries})"
                             )
                         else:
@@ -377,7 +493,9 @@ class WorkerZMQCoordinator:
     def _heartbeat_loop(self):
         """Heartbeat loop - sends heartbeat to API server every 5 seconds"""
         session = requests.Session()
-        heartbeat_timeout = 5  # 5 second timeout for requests
+        heartbeat_timeout = (
+            10  # 10 second timeout for requests (increased to handle API server load)
+        )
 
         while not self.heartbeat_stop_event.is_set():
             try:
@@ -394,7 +512,7 @@ class WorkerZMQCoordinator:
                 )
 
                 if response.status_code == 200:
-                    logger.debug(
+                    logger.info(
                         f"Rank {self.rank}: Heartbeat sent successfully for group '{self.identifier}'"
                     )
                 else:
@@ -408,23 +526,358 @@ class WorkerZMQCoordinator:
             # Wait 5 seconds before next heartbeat
             self.heartbeat_stop_event.wait(5)
 
+    def _nccl_scatter_data(self, data: Any, src_rank: int = 0) -> Any:
+        """DP-aware NCCL scatter: rank 0 sends data, split by DP groups, replicated within SP groups
+
+        This ensures that:
+        - Data is split by Data Parallel (DP) groups
+        - Workers in the same DP group but different SP ranks get the SAME data
+        - Ulysses all-gather becomes unnecessary (workers already have what they need)
+
+        Args:
+            data: Full data on rank 0, None on other ranks
+            src_rank: Source rank (default 0)
+
+        Returns:
+            Scattered chunk for this rank
+        """
+        global worker
+
+        # Get SP size from worker config (if available)
+        sp_size = 1
+        if worker is not None and hasattr(worker, "ulysses_sequence_parallel_size"):
+            sp_size = worker.ulysses_sequence_parallel_size
+            logger.info(f"[WORKER-{self.rank}] Using SP size {sp_size} from worker config")
+
+        # Calculate DP size
+        dp_size = self.world_size // sp_size
+
+        logger.info(
+            f"[WORKER-{self.rank}] NCCL scatter topology: world_size={self.world_size}, "
+            f"sp_size={sp_size}, dp_size={dp_size}"
+        )
+
+        # Use scatter_object_list for DataProto objects
+        scatter_list: Optional[list[Any]] = None
+        if self.rank == src_rank:
+            from ..utils.protocol import DataProto
+
+            if isinstance(data, DataProto):
+                # Split by DP groups
+                dp_chunks = data.chunk(dp_size)
+
+                # Replicate each DP chunk to all SP ranks in that DP group
+                # Worker layout: [dp0_sp0, dp0_sp1, ..., dp0_sp(N-1), dp1_sp0, dp1_sp1, ...]
+                scatter_list = []
+                for dp_rank in range(dp_size):
+                    for sp_rank in range(sp_size):
+                        scatter_list.append(dp_chunks[dp_rank])  # Same chunk for all SP ranks
+
+                logger.info(
+                    f"[WORKER-{self.rank}] Split data into {dp_size} DP chunks, "
+                    f"replicated {sp_size} times each = {len(scatter_list)} total chunks"
+                )
+            else:
+                # Fallback: replicate data to all ranks
+                logger.warning(
+                    f"[WORKER-{self.rank}] NCCL scatter received non-DataProto data, "
+                    f"replicating to all ranks"
+                )
+                scatter_list = [data] * self.world_size
+        else:
+            scatter_list = [None] * self.world_size
+
+        # Scatter: each rank receives scatter_list[rank]
+        output_list: list[Any] = [None]
+        torch.distributed.scatter_object_list(output_list, scatter_list, src=src_rank)
+
+        logger.info(
+            f"[WORKER-{self.rank}] ✓ DP-aware NCCL scatter complete (dp_size={dp_size}, sp_size={sp_size})"
+        )
+        return output_list[0]
+
+    def _nccl_gather_result(self, result: Any, dst_rank: int = 0) -> Any:
+        """NCCL gather: all ranks send results to rank 0
+
+        Args:
+            result: Result from this rank
+            dst_rank: Destination rank (default 0)
+
+        Returns:
+            Gathered results list on rank 0, None on other ranks
+        """
+        # Use gather_object for results
+        gather_list: Optional[list[Any]]
+        if self.rank == dst_rank:
+            gather_list = [None] * self.world_size
+        else:
+            gather_list = None
+
+        torch.distributed.gather_object(result, gather_list, dst=dst_rank)
+
+        if self.rank == dst_rank:
+            assert gather_list is not None  # Type narrowing for mypy
+            logger.info(
+                f"[WORKER-{self.rank}] ✓ NCCL gather complete, received {len(gather_list)} results"
+            )
+            # Concatenate gathered DataProto results
+            from ..utils.protocol import DataProto
+
+            if gather_list and isinstance(gather_list[0], DataProto):
+                return DataProto.concat(gather_list)
+            else:
+                # Return list as-is if not DataProto
+                return gather_list
+        else:
+            logger.info(f"[WORKER-{self.rank}] ✓ NCCL gather sent result to rank {dst_rank}")
+            return None
+
     def worker_loop(self):
-        """Main worker loop to handle commands from API server"""
-        logger.info(f"Rank {self.rank}: Starting ZMQ worker loop")
+        """Main worker loop to handle commands and data from API server / direct clients
+
+        Two-phase protocol with ACK-based ordering (prevents race conditions):
+        1. Client → Rank 0: Send data via PUSH socket
+        2. Rank 0 → Client: Send ACK via PULL socket (confirms data received)
+        3. Client waits for ACK, then broadcasts execute signal via PUB/SUB
+        4. All workers: Receive execute signal, participate in NCCL scatter/gather
+
+        This ensures execute signal never arrives before data on rank 0.
+        """
+        logger.info(f"Rank {self.rank}: Starting ZMQ worker loop (two-phase protocol enabled)")
 
         # Set up polling for both subscriber and data_puller
         poller = zmq.Poller()
         poller.register(self.subscriber, zmq.POLLIN)
         poller.register(self.data_puller, zmq.POLLIN)
 
+        # Log once at start
+        poll_count = 0
+        last_debug_log = time.time()
+
         while True:
             try:
                 # Poll for messages with a short timeout
                 socks = dict(poller.poll(timeout=100))  # 100ms timeout
+                poll_count += 1
 
-                # Check for command messages (simple commands via subscriber)
+                # Log polling status every 10 seconds for debugging
+                now = time.time()
+                if now - last_debug_log > 10:
+                    logger.debug(
+                        f"[WORKER-{self.rank}] Polling status: {poll_count} polls, sockets ready: {len(socks)}, pending_ops: {len(self.pending_ops)}"
+                    )
+                    last_debug_log = now
+
+                # Log when any socket has data
+                if socks:
+                    socket_names = []
+                    if self.subscriber in socks:
+                        socket_names.append("SUB")
+                    if self.data_puller in socks:
+                        socket_names.append("PULL")
+                    logger.debug(
+                        f"[WORKER-{self.rank}] Poll returned {len(socks)} sockets: {socket_names}"
+                    )
+
+                # Check for messages via SUB socket (commands and execute signals)
                 if self.subscriber in socks and socks[self.subscriber] == zmq.POLLIN:
-                    message = self.subscriber.recv_pyobj(zmq.NOBLOCK)
+                    logger.info(
+                        f"[WORKER-{self.rank}] SUB socket has message available, receiving..."
+                    )
+                    message = self.subscriber.recv_pyobj()
+                    logger.info(
+                        f"[WORKER-{self.rank}] SUB message: phase={message.get('phase')}, op_id={message.get('op_id')}"
+                    )
+
+                    # TWO-PHASE PROTOCOL: Phase 2 - Execute signal
+                    if message.get("phase") == "execute":
+                        op_id = message.get("op_id")
+                        logger.info(
+                            f"[WORKER-{self.rank}] ★ Received execute signal for op_id={op_id}"
+                        )
+                        logger.info(
+                            f"[WORKER-{self.rank}] Current pending_ops: {list(self.pending_ops.keys())}"
+                        )
+
+                        if op_id in self.pending_ops:
+                            # Data already received (on rank 0) or execute signal arrived
+                            pending = self.pending_ops.pop(op_id)
+                            operation = pending.get("operation")
+                            use_nccl_scatter = pending.get("use_nccl_scatter", False)
+
+                            # Get data: rank 0 has it, others get None initially
+                            data_proto = pending.get("data") if self.rank == 0 else None
+
+                            # In NCCL mode, broadcast operation name from rank 0 to all workers
+                            if use_nccl_scatter:
+                                # Broadcast operation info
+                                operation_info = [operation] if self.rank == 0 else [None]
+                                torch.distributed.broadcast_object_list(operation_info, src=0)
+                                operation = operation_info[0]
+
+                                logger.info(
+                                    f"[WORKER-{self.rank}] ► Executing {operation} for op_id={op_id} "
+                                    f"(NCCL scatter/gather mode)"
+                                )
+                            else:
+                                logger.info(
+                                    f"[WORKER-{self.rank}] ► Executing {operation} for op_id={op_id} "
+                                    f"(legacy mode)"
+                                )
+
+                            try:
+                                # If using NCCL scatter, rank 0 scatters data to all workers
+                                if use_nccl_scatter:
+                                    logger.info(
+                                        f"[WORKER-{self.rank}] 🔄 NCCL scatter starting from rank 0..."
+                                    )
+                                    data_proto = self._nccl_scatter_data(data_proto, src_rank=0)
+                                    logger.info(
+                                        f"[WORKER-{self.rank}] ✓ NCCL scatter complete, received data chunk"
+                                    )
+
+                                # All workers execute with their data chunk
+                                if operation is None:
+                                    raise ValueError(f"Operation is None for op_id={op_id}")
+                                if data_proto is None:
+                                    raise ValueError(f"Data is None for op_id={op_id}")
+                                result = self._execute_operation(operation, data_proto)
+                                logger.info(
+                                    f"[WORKER-{self.rank}] ✓ Operation {operation} completed successfully"
+                                )
+
+                                # If using NCCL gather, all workers send results to rank 0
+                                if use_nccl_scatter:
+                                    logger.info(
+                                        f"[WORKER-{self.rank}] 🔄 NCCL gather starting to rank 0..."
+                                    )
+                                    gathered_result = self._nccl_gather_result(result, dst_rank=0)
+
+                                    if self.rank == 0:
+                                        # Rank 0 sends gathered result to client
+                                        logger.info(
+                                            f"[WORKER-{self.rank}] ✓ NCCL gather complete, sending to client"
+                                        )
+                                        response = {
+                                            "rank": self.rank,
+                                            "op_id": op_id,
+                                            "success": True,
+                                            "result": gathered_result,
+                                        }
+                                        self.pusher.send_pyobj(response)
+                                        logger.info(
+                                            f"[WORKER-{self.rank}] ✓ Result sent successfully"
+                                        )
+                                    else:
+                                        # Other ranks don't send results (already gathered to rank 0)
+                                        logger.info(
+                                            f"[WORKER-{self.rank}] ✓ Result gathered to rank 0, no ZMQ send needed"
+                                        )
+                                else:
+                                    # Legacy mode: all workers send results individually
+                                    response = {
+                                        "rank": self.rank,
+                                        "op_id": op_id,
+                                        "success": True,
+                                        "result": result,
+                                    }
+                                    self.pusher.send_pyobj(response)
+                                    logger.info(f"[WORKER-{self.rank}] ✓ Result sent successfully")
+
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logger.error(
+                                    f"[WORKER-{self.rank}] ✗ Operation {operation} failed: {e}"
+                                )
+                                logger.error(f"[WORKER-{self.rank}] Traceback:\n{tb}")
+
+                                # Always send error responses (even in NCCL mode)
+                                response = {
+                                    "rank": self.rank,
+                                    "op_id": op_id,
+                                    "success": False,
+                                    "error": str(e),
+                                    "traceback": tb,
+                                }
+                                self.pusher.send_pyobj(response)
+                        else:
+                            # Data not in pending_ops
+                            if self.rank == 0:
+                                # BUG: With ACK-based ordering, execute should never arrive before data on rank 0
+                                logger.error(
+                                    f"[WORKER-{self.rank}] 🐛 BUG: Execute signal arrived before data for op_id={op_id}. "
+                                    f"This violates ACK-based ordering! Client should wait for data ACK before sending execute."
+                                )
+                                continue
+
+                            # Non-rank-0 workers: This is EXPECTED in NCCL scatter mode
+                            # Only rank 0 receives data via PULL socket, others participate via NCCL
+                            logger.info(
+                                f"[WORKER-{self.rank}] ⚠ Execute signal received, participating in NCCL scatter for op_id={op_id}"
+                            )
+
+                            # Broadcast operation name from rank 0
+                            operation_info = [None]
+                            torch.distributed.broadcast_object_list(operation_info, src=0)
+                            operation = operation_info[0]
+
+                            logger.info(
+                                f"[WORKER-{self.rank}] ► Executing {operation} for op_id={op_id} "
+                                f"(NCCL scatter/gather mode)"
+                            )
+
+                            try:
+                                # NCCL scatter data from rank 0
+                                logger.info(
+                                    f"[WORKER-{self.rank}] 🔄 NCCL scatter starting from rank 0..."
+                                )
+                                data_proto = self._nccl_scatter_data(None, src_rank=0)
+                                logger.info(
+                                    f"[WORKER-{self.rank}] ✓ NCCL scatter complete, received data chunk"
+                                )
+
+                                # Execute operation
+                                if operation is None:
+                                    raise ValueError(f"Operation is None for op_id={op_id}")
+                                if data_proto is None:
+                                    raise ValueError(
+                                        f"Data is None after NCCL scatter for op_id={op_id}"
+                                    )
+                                result = self._execute_operation(operation, data_proto)
+                                logger.info(
+                                    f"[WORKER-{self.rank}] ✓ Operation {operation} completed successfully"
+                                )
+
+                                # NCCL gather results to rank 0
+                                logger.info(
+                                    f"[WORKER-{self.rank}] 🔄 NCCL gather starting to rank 0..."
+                                )
+                                gathered_result = self._nccl_gather_result(result, dst_rank=0)
+
+                                # Other ranks don't send results (already gathered to rank 0)
+                                logger.info(
+                                    f"[WORKER-{self.rank}] ✓ Result gathered to rank 0, no ZMQ send needed"
+                                )
+
+                            except Exception as e:
+                                tb = traceback.format_exc()
+                                logger.error(
+                                    f"[WORKER-{self.rank}] ✗ Operation {operation} failed: {e}"
+                                )
+                                logger.error(f"[WORKER-{self.rank}] Traceback:\n{tb}")
+
+                                # Send error response
+                                response = {
+                                    "rank": self.rank,
+                                    "op_id": op_id,
+                                    "success": False,
+                                    "error": str(e),
+                                    "traceback": tb,
+                                }
+                                self.pusher.send_pyobj(response)
+
+                        continue
+
                     operation = message.get("operation")
 
                     if operation == "command":
@@ -464,77 +917,118 @@ class WorkerZMQCoordinator:
                         "generate_sequences",
                         "compute_ref_log_prob",
                     ]:
-                        # Handle broadcast DataProto operations (same data to all workers)
-                        data_proto = message.get("data")
-                        logger.info(f"Rank {self.rank}: Received broadcast operation: {operation}")
-
-                        try:
-                            result = self._execute_operation(operation, data_proto)
-                            response = {"rank": self.rank, "success": True, "result": result}
-                        except Exception as e:
-                            tb = traceback.format_exc()
-                            logger.error(f"Rank {self.rank}: Broadcast operation failed: {e}")
-                            logger.error(f"Rank {self.rank}: Traceback:\n{tb}")
-                            response = {
-                                "rank": self.rank,
-                                "success": False,
-                                "error": str(e),
-                                "traceback": tb,
-                            }
-
-                        # Send result back to API server
-                        self.pusher.send_pyobj(response)
-
-                # Check for scatter data messages (individual data chunks via data_puller)
-                if self.data_puller in socks and socks[self.data_puller] == zmq.POLLIN:
-                    message = self.data_puller.recv_pyobj(zmq.NOBLOCK)
-                    operation = message.get("operation")
-
-                    if operation in [
-                        "compute_log_prob",
-                        "update_actor",
-                        "update_actor_with_distillation",
-                        "generate_sequences",
-                        "compute_ref_log_prob",
-                    ]:
-                        # Handle scatter DataProto operations (data chunks sent to individual workers)
-                        data_proto = message.get("data")
-                        target_rank = message.get("rank", self.rank)
-                        logger.info(
-                            f"Rank {self.rank}: Received scatter operation: {operation} (target rank: {target_rank})"
+                        # Legacy broadcast path is removed - use two-phase protocol via PULL socket
+                        logger.error(
+                            f"Rank {self.rank}: Received legacy broadcast operation '{operation}' via SUB socket. "
+                            f"This is no longer supported. Use DirectZMQTrainServiceClient with two-phase protocol."
                         )
-
-                        # Verify this message is intended for this rank
-                        if target_rank != self.rank:
-                            logger.warning(
-                                f"Rank {self.rank}: Received message intended for rank {target_rank}, ignoring"
-                            )
-                            continue
-
-                        try:
-                            result = self._execute_operation(operation, data_proto)
-                            response = {"rank": self.rank, "success": True, "result": result}
-                        except Exception as e:
-                            tb = traceback.format_exc()
-                            logger.error(f"Rank {self.rank}: Scatter operation failed: {e}")
-                            logger.error(f"Rank {self.rank}: Traceback:\n{tb}")
-                            response = {
-                                "rank": self.rank,
-                                "success": False,
-                                "error": str(e),
-                                "traceback": tb,
-                            }
-
-                        # Send result back to API server
-                        self.pusher.send_pyobj(response)
-                    else:
-                        logger.warning(f"Rank {self.rank}: Unknown scatter operation: {operation}")
                         response = {
                             "rank": self.rank,
                             "success": False,
-                            "error": f"Unknown scatter operation: {operation}",
+                            "error": f"Legacy broadcast operations are no longer supported. Use DirectZMQTrainServiceClient.",
                         }
                         self.pusher.send_pyobj(response)
+
+                # Check for data messages via PULL socket (direct from client)
+                if self.data_puller in socks and socks[self.data_puller] == zmq.POLLIN:
+                    logger.info(
+                        f"[WORKER-{self.rank}] PULL socket has data available, receiving..."
+                    )
+                    message = self.data_puller.recv_pyobj()
+                    logger.info(
+                        f"[WORKER-{self.rank}] Received message with keys: {list(message.keys())}, phase={message.get('phase')}"
+                    )
+
+                    # Handle ping message for connectivity verification
+                    if message.get("phase") == "ping":
+                        op_id = message.get("op_id")
+                        logger.info(
+                            f"[WORKER-{self.rank}] Received ping for op_id={op_id}, sending pong"
+                        )
+                        pong_response = {
+                            "rank": self.rank,
+                            "op_id": op_id,
+                            "pong": True,
+                            "success": True,
+                            "timestamp": time.time(),
+                        }
+                        self.pusher.send_pyobj(pong_response)
+                        logger.info(f"[WORKER-{self.rank}] ✓ Pong sent for op_id={op_id}")
+                        continue
+
+                    # TWO-PHASE PROTOCOL: Phase 1 - Store data, don't execute yet
+                    if message.get("phase") == "data":
+                        recv_time = time.time()
+                        op_id = message.get("op_id")
+                        operation = message.get("operation")
+                        data_proto = message.get("data")
+                        use_nccl_scatter = message.get("use_nccl_scatter", False)
+                        send_timestamp = message.get("timestamp", 0)
+
+                        # Calculate receive latency to help diagnose network/serialization issues
+                        if send_timestamp > 0:
+                            recv_latency = recv_time - send_timestamp
+                            logger.info(
+                                f"[WORKER-{self.rank}] Received data message for op_id={op_id} "
+                                f"(network+deserialization latency: {recv_latency:.2f}s)"
+                            )
+                        else:
+                            logger.info(
+                                f"[WORKER-{self.rank}] Received data message for op_id={op_id}"
+                            )
+
+                        # Check for duplicate data message
+                        if op_id in self.pending_ops:
+                            logger.error(
+                                f"[WORKER-{self.rank}] 🐛 BUG DETECTED: Received duplicate data for op_id={op_id}! "
+                                f"Already have operation='{self.pending_ops[op_id].get('operation')}', "
+                                f"new message has operation='{operation}'. "
+                                f"This indicates a client-side bug or duplicate send."
+                            )
+                            # Overwrite with new data (fail-safe behavior)
+
+                        # Store in pending_ops, wait for execute signal
+                        self.pending_ops[op_id] = {
+                            "operation": operation,
+                            "data": data_proto,
+                            "use_nccl_scatter": use_nccl_scatter,
+                        }
+                        logger.info(
+                            f"[WORKER-{self.rank}] ✓ Stored data for op_id={op_id}, operation={operation}, "
+                            f"NCCL mode={use_nccl_scatter}, waiting for execute signal (pending_ops count: {len(self.pending_ops)})"
+                        )
+
+                        # Send ACK to client so it knows data was received
+                        # Client will wait for this before broadcasting execute signal
+                        # This prevents race condition where execute arrives before data
+                        ack_start = time.time()
+                        ack_response = {
+                            "rank": self.rank,
+                            "op_id": op_id,
+                            "phase": "data_ack",
+                            "success": True,
+                            "timestamp": time.time(),
+                        }
+                        self.pusher.send_pyobj(ack_response)
+                        ack_send_time = time.time() - ack_start
+                        logger.info(
+                            f"[WORKER-{self.rank}] ✓ Sent data ACK for op_id={op_id} "
+                            f"(ACK send took {ack_send_time:.3f}s)"
+                        )
+
+                        continue
+
+                    # Message without phase="data" - this is an error in the new architecture
+                    logger.error(
+                        f"Rank {self.rank}: Received message without 'phase' field on PULL socket. "
+                        f"Only two-phase protocol is supported. Message keys: {list(message.keys())}"
+                    )
+                    response = {
+                        "rank": self.rank,
+                        "success": False,
+                        "error": "Invalid message format. Use two-phase protocol with phase='data' and phase='execute'.",
+                    }
+                    self.pusher.send_pyobj(response)
 
             except Exception as e:
                 tb = traceback.format_exc()
@@ -602,7 +1096,6 @@ class WorkerZMQCoordinator:
                 worker_config = OmegaConf.load(config_path)
         elif config_dict:
             worker_config = OmegaConf.create(config_dict)
-            worker_config = worker_config.config_dict
         else:
             raise ValueError("Either config_path or config_dict must be provided")
 
@@ -662,10 +1155,6 @@ class WorkerZMQCoordinator:
 
         if worker is None:
             raise RuntimeError("Worker not initialized")
-
-        if not hasattr(worker, "_is_actor") or not worker._is_actor:
-            # Only actor workers can save checkpoints, return success for others
-            return {"message": "Non-actor worker, checkpoint save skipped"}
 
         worker.save_checkpoint(
             local_path=local_path,
@@ -737,10 +1226,6 @@ class WorkerZMQCoordinator:
             "rank": self.rank,
             "worker_initialized": True,
             "role": getattr(worker, "role", None),
-            "_is_actor": getattr(worker, "_is_actor", None),
-            "_is_rollout": getattr(worker, "_is_rollout", None),
-            "_is_ref": getattr(worker, "_is_ref", None),
-            "_is_actor_forward": getattr(worker, "_is_actor_forward", None),
         }
 
     def _get_rank_info(self, **kwargs) -> dict[str, Any]:
@@ -810,23 +1295,11 @@ class WorkerZMQCoordinator:
             raise RuntimeError("Worker not initialized")
 
         if operation == "compute_log_prob":
-            if not (hasattr(worker, "_is_actor") and worker._is_actor) and not (
-                hasattr(worker, "_is_actor_forward") and worker._is_actor_forward
-            ):
-                raise RuntimeError("Worker is not configured for log prob computation")
             return worker.compute_log_prob(data_proto)
         elif operation == "update_actor":
-            if not hasattr(worker, "_is_actor") or not worker._is_actor:
-                raise RuntimeError("Worker is not configured as actor")
             return worker.update_actor(data_proto)
         elif operation == "update_actor_with_distillation":
-            if not hasattr(worker, "_is_actor") or not worker._is_actor:
-                raise RuntimeError("Worker is not configured as actor")
             return worker.update_actor_with_distillation(data_proto)
-        elif operation == "compute_ref_log_prob":
-            if not hasattr(worker, "_is_ref") or not worker._is_ref:
-                raise RuntimeError("Worker is not configured as reference")
-            return worker.compute_ref_log_prob(data_proto)
         else:
             raise ValueError(f"Unknown operation: {operation}")
 

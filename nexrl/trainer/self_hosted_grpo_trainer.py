@@ -166,6 +166,7 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         # Step 2: Recompute old logprobs
         if self._do_old_log_prob_compute:
             old_log_probs = self._compute_old_log_probs(batch)
+            logger.debug(f"Old log probs computed with shape: {old_log_probs.shape}")
             batch.values["old_log_probs"] = old_log_probs
         else:
             bsz = batch.metadata["batch_size"]
@@ -302,7 +303,8 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
             Old log probabilities tensor
         """
         with self._train_service_client.actor_context():
-            ret = self._train_service_client.compute_log_prob(batch.to_nextrainer_batch())
+            nextrainer_batch = batch.to_nextrainer_batch()
+            ret = self._train_service_client.compute_log_prob(nextrainer_batch)
         old_log_probs: torch.Tensor = ret["batch"]["old_log_probs"]
 
         # Dump old_log_probs for debug
@@ -331,8 +333,6 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         # Get responses and initialize reward tensor
         responses = batch.values["responses"]
         reward_tensor = torch.zeros_like(responses, dtype=torch.float32)
-
-        logger.info(f"Reward tensor shape: {reward_tensor.shape}")
 
         batch_size = len(batch)
         response_length = responses.size(-1)

@@ -212,12 +212,14 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
     """Centralized migration of all legacy config structures to new format.
 
     This function handles ALL backward compatibility transformations in one place:
-    1. model_tag → identifier
-    2. resource.train → service.train_service.*.resource
-    3. resource.inference → service.inference_service.resource
-    4. resource.agent → rollout_worker.resource
-    5. Flat train_service → nested with role
-    6. Add missing role fields
+    1. model_tag → identifier (inference_service)
+    2. Flat train_service → nested with role
+    3. model_tag → identifier (train_service)
+    4. Add missing role fields
+    5. backend: http/nextrainer → direct-zmq
+    6. resource.train → service.train_service.*.resource
+    7. resource.inference → service.inference_service.resource
+    8. resource.agent → rollout_worker.resource
 
     To remove backward compatibility in future: just delete this function and its call.
     """
@@ -307,7 +309,20 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
         migrations_applied.append(f"train_service.{service_name}: added role='actor'")
 
     # ============================================================================
-    # 5. Migrate resource.train → train_service.*.resource
+    # 5. Migrate train service backend: http/nextrainer → direct-zmq
+    # ============================================================================
+    for service_name, service_config in train_service.items():
+        if not (isinstance(service_config, dict) or OmegaConf.is_dict(service_config)):
+            continue
+        backend = service_config.get("backend")
+        if backend in ["http", "nextrainer"]:
+            service_config["backend"] = "direct-zmq"
+            migrations_applied.append(
+                f"train_service.{service_name}.backend: {backend} → direct-zmq"
+            )
+
+    # ============================================================================
+    # 6. Migrate resource.train → train_service.*.resource
     # ============================================================================
     old_train_resources = config.get("resource", {}).get("train") if "resource" in config else None
     logger.info(f"[DEBUG] old_train_resources: {old_train_resources}")
@@ -372,7 +387,7 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
                 logger.info(f"[DEBUG] No resource_spec found for service '{service_name}'")
 
     # ============================================================================
-    # 6. Migrate resource.inference → inference_service.resource
+    # 7. Migrate resource.inference → inference_service.resource
     # ============================================================================
     old_inference_resource = (config.get("resource") or {}).get("inference")
     if old_inference_resource and (
@@ -408,7 +423,7 @@ def migrate_legacy_config(config: DictConfig):  # pylint: disable=protected-acce
                 )
 
     # ============================================================================
-    # 7. Migrate resource.agent → rollout_worker.resource
+    # 8. Migrate resource.agent → rollout_worker.resource
     # ============================================================================
     old_agent_resource = (config.get("resource") or {}).get("agent")
     if old_agent_resource and (

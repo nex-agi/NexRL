@@ -77,7 +77,6 @@ class ModelWorker(Worker):
 
     def __init__(self, config: DictConfig, role: str = "actor", reward_fn=None):
         super().__init__()
-        assert role == "actor", "Only 'actor' role is supported"
 
         self.config = config
         self.apply_transformers_monkey_patch = (
@@ -85,8 +84,6 @@ class ModelWorker(Worker):
         )
         self.reward_fn = reward_fn
         self.role = role
-        self._is_actor = role == "actor"
-        assert self._is_actor, "Only 'actor' role is supported"
 
         import torch.distributed
 
@@ -145,7 +142,9 @@ class ModelWorker(Worker):
             self.config.ppo_micro_batch_size //= dp_size
             self.config.ppo_micro_batch_size_per_gpu = self.config.ppo_micro_batch_size
             assert self.config.ppo_micro_batch_size_per_gpu is not None
-            assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size_per_gpu == 0
+            assert (
+                self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size_per_gpu == 0
+            ), f"ppo_mini_batch_size {self.config.ppo_mini_batch_size} is not divisible by ppo_micro_batch_size_per_gpu {self.config.ppo_micro_batch_size_per_gpu}"
             assert (
                 self.config.ppo_micro_batch_size_per_gpu != 0
             ), f"ppo_micro_batch_size_per_gpu {error_str}"
@@ -433,6 +432,7 @@ class ModelWorker(Worker):
 
             with Timer(name="update_policy", logger=None) as timer:
                 metrics = self.actor.update_policy(data=data)
+
             delta_time = timer.last
             global_num_tokens = data.meta_info["global_token_num"]
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(
@@ -449,6 +449,7 @@ class ModelWorker(Worker):
             output = DataProto(meta_info={"metrics": metrics})
 
             output = self.ulysses_sharding_manager.postprocess_data(data=output)
+
             output = output.to("cpu")
 
         # Offloading removed

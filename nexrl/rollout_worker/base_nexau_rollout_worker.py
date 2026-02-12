@@ -273,7 +273,6 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         from nexau.archs.config.config_loader import load_agent_config
 
         agent = load_agent_config(self.nexau_agent_config_path)
-
         # Setup custom LLM client if provided
         if custom_llm_client_provider:
             # Read agent name from config
