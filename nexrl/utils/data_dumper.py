@@ -579,9 +579,30 @@ class DataDumper:
             else:
                 raise ValueError(f"Unsupported dump format: {self._format}")
 
+    # Extra-field keys that the train() function actually consumes.
+    # Everything else (ground_truth, finish_reason, logprobs, prompt, response, …)
+    # is only useful at rollout time and would waste dump size + memory on reload.
+    # In particular, "logprobs" is as large as "tokens" and is never used by train().
+    _TRAIN_RELEVANT_EXTRA_FIELDS: set[str] = {
+        # GRPO grouping / ordering
+        "group_id",
+        "uid",
+        "run_id",
+        "task_id",
+        # Metrics logging
+        "score",
+        # Batch metadata (extracted by Batch.from_trajectories)
+        "temperature",
+    }
+
     def _serialize_trajectory(self, traj) -> dict[str, Any]:
         """
         Serialize a Trajectory object to a dictionary.
+
+        Only the fields that the ``train()`` pipeline actually consumes are
+        included.  Rollout-only metadata (ground_truth, finish_reason,
+        logprobs, prompt, response, …) is intentionally omitted to reduce dump
+        size and memory when replaying via MockRolloutWorker.
 
         Args:
             traj: Trajectory object
@@ -595,11 +616,15 @@ class DataDumper:
             "reward": float(traj.reward),
             "is_val": bool(traj.is_val),
         }
-        # Add extra fields
+        # Only dump extra fields that train() actually uses
         if hasattr(traj, "extra_fields") and traj.extra_fields:
-            result["extra_fields"] = {
-                k: self._to_serializable(v) for k, v in traj.extra_fields.items()
+            filtered = {
+                k: self._to_serializable(v)
+                for k, v in traj.extra_fields.items()
+                if k in self._TRAIN_RELEVANT_EXTRA_FIELDS
             }
+            if filtered:
+                result["extra_fields"] = filtered
         return result
 
     def _to_serializable(self, v: Any) -> Any:

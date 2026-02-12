@@ -292,6 +292,15 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         perm = [i for _, _, _, i in sorted(keys)]
         return batch.reorder(perm)
 
+    # Tensor keys required by the backend's compute_log_prob operation.
+    _BACKEND_COMPUTE_LOG_PROB_KEYS = [
+        "input_ids",
+        "attention_mask",
+        "position_ids",
+        "responses",
+        "scoring_attention_mask",
+    ]
+
     def _compute_old_log_probs(self, batch: Batch) -> torch.Tensor:
         """
         Recompute old log probs using the train service client.
@@ -303,7 +312,9 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
             Old log probabilities tensor
         """
         with self._train_service_client.actor_context():
-            nextrainer_batch = batch.to_nextrainer_batch()
+            trimmed = batch.trim_for_backend(self._BACKEND_COMPUTE_LOG_PROB_KEYS)
+            logger.info(f"Successfully trimmed batch for compute_log_prob")
+            nextrainer_batch = trimmed.to_nextrainer_batch()
             ret = self._train_service_client.compute_log_prob(nextrainer_batch)
         old_log_probs: torch.Tensor = ret["batch"]["old_log_probs"]
 
