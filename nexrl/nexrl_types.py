@@ -449,6 +449,31 @@ class Batch:
         # Return new Batch with stripped values
         return Batch(values=new_values, metadata=data.metadata.copy())
 
+    def trim_for_backend(self, required_tensor_keys: list[str]) -> "Batch":
+        """Trim the batch to only include required tensor keys for the train service backend.
+
+        This removes all non-tensor values and unused tensor values from the batch
+        to reduce network traffic and GPU memory when sending to the backend.
+
+        Only tensor values whose keys appear in ``required_tensor_keys`` are kept.
+        Keys listed in ``required_tensor_keys`` that are not present in the batch
+        are silently skipped (they may be optional fields).
+
+        Metadata is preserved as-is since the backend reads configuration from it.
+
+        Args:
+            required_tensor_keys: List of tensor key names that the backend operation
+                actually consumes.
+
+        Returns:
+            A new Batch containing only the required tensor values and the original metadata.
+        """
+        trimmed_values = {}
+        for key in required_tensor_keys:
+            if key in self.values and isinstance(self.values[key], torch.Tensor):
+                trimmed_values[key] = self.values[key]
+        return Batch(values=trimmed_values, metadata=self.metadata.copy())
+
     def to_nextrainer_batch(self) -> dict[str, Any]:
         """
         Prepare batch for NexTrainer

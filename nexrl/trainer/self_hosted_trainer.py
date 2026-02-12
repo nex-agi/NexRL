@@ -263,7 +263,24 @@ class SelfHostedTrainer(BaseTrainer):
 
             # Update actor
             update_actor_start_time = time.time()
-            nextrainer_batch = batch.to_nextrainer_batch()
+
+            # Trim batch to only include fields required by the backend to reduce
+            # network traffic and GPU memory. All non-tensor values (e.g. tokens,
+            # reward, group_id, logprobs) and unused tensor values (e.g. prompts,
+            # loss_mask, token_level_scores) are removed.
+            _BACKEND_UPDATE_ACTOR_KEYS = [
+                "input_ids",
+                "attention_mask",
+                "position_ids",
+                "responses",
+                "advantages",
+                "scoring_attention_mask",
+                "old_log_probs",
+                "ref_log_prob",
+            ]
+            backend_batch = batch.trim_for_backend(_BACKEND_UPDATE_ACTOR_KEYS)
+            logger.info(f"Successfully trimmed batch for update_actor")
+            nextrainer_batch = backend_batch.to_nextrainer_batch()
 
             actor_output = self._train_service_client.update_actor(nextrainer_batch)
             update_actor_time = time.time() - update_actor_start_time
@@ -358,6 +375,9 @@ class SelfHostedTrainer(BaseTrainer):
         max_prompt_len = 0
         for traj in trajectories:
             loss_mask_values = traj.loss_mask
+            # Convert to list if it's a tensor (e.g., when loaded from .pt files)
+            if isinstance(loss_mask_values, torch.Tensor):
+                loss_mask_values = loss_mask_values.tolist()
             try:
                 first_one_idx = loss_mask_values.index(1)
             except ValueError:
@@ -376,6 +396,11 @@ class SelfHostedTrainer(BaseTrainer):
         for traj in trajectories:
             tokens = traj.tokens
             loss_mask_values = traj.loss_mask
+            # Convert to list if they are tensors (e.g., when loaded from .pt files)
+            if isinstance(tokens, torch.Tensor):
+                tokens = tokens.tolist()
+            if isinstance(loss_mask_values, torch.Tensor):
+                loss_mask_values = loss_mask_values.tolist()
 
             # Extract prompt_tokens and response_tokens based on loss_mask
             # The loss mask can be like 0011000111 - we want the first zeros until a 1

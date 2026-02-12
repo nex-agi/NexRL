@@ -534,6 +534,10 @@ class WorkerZMQCoordinator:
         - Workers in the same DP group but different SP ranks get the SAME data
         - Ulysses all-gather becomes unnecessary (workers already have what they need)
 
+        MEMORY OPTIMIZATION: Uses per-tensor scatter instead of scatter_object_list to avoid
+        pickling the entire DataProto into GPU memory. This reduces peak GPU memory on rank 0
+        from O(full_data) to O(single_largest_tensor + 1_chunk).
+
         Args:
             data: Full data on rank 0, None on other ranks
             src_rank: Source rank (default 0)
@@ -557,77 +561,292 @@ class WorkerZMQCoordinator:
             f"sp_size={sp_size}, dp_size={dp_size}"
         )
 
-        # Use scatter_object_list for DataProto objects
-        scatter_list: Optional[list[Any]] = None
+        from ..utils.protocol import DataProto
+
+        # Handle non-DataProto fallback with old method
+        if self.rank == src_rank and not isinstance(data, DataProto):
+            logger.warning(
+                f"[WORKER-{self.rank}] NCCL scatter received non-DataProto data, "
+                f"using legacy scatter_object_list (higher memory usage)"
+            )
+            scatter_list = [data] * self.world_size
+            output_list: list[Any] = [None]
+            torch.distributed.scatter_object_list(output_list, scatter_list, src=src_rank)
+            return output_list[0]
+
+        # Per-tensor scatter for DataProto (memory-optimized)
         if self.rank == src_rank:
-            from ..utils.protocol import DataProto
+            # Step 1: Chunk the DataProto by DP size
+            dp_chunks = data.chunk(dp_size)
 
-            if isinstance(data, DataProto):
-                # Split by DP groups
-                dp_chunks = data.chunk(dp_size)
+            # Free original data to release CPU memory (chunks may be views,
+            # but for non-tensor fields the reference is no longer needed)
+            del data
 
-                # Replicate each DP chunk to all SP ranks in that DP group
-                # Worker layout: [dp0_sp0, dp0_sp1, ..., dp0_sp(N-1), dp1_sp0, dp1_sp1, ...]
-                scatter_list = []
-                for dp_rank in range(dp_size):
-                    for sp_rank in range(sp_size):
-                        scatter_list.append(dp_chunks[dp_rank])  # Same chunk for all SP ranks
+            # Step 2: Extract metadata from first chunk (all chunks have same structure)
+            sample_chunk = dp_chunks[0]
+            tensor_keys = list(sample_chunk.batch.keys()) if sample_chunk.batch is not None else []
 
-                logger.info(
-                    f"[WORKER-{self.rank}] Split data into {dp_size} DP chunks, "
-                    f"replicated {sp_size} times each = {len(scatter_list)} total chunks"
-                )
-            else:
-                # Fallback: replicate data to all ranks
-                logger.warning(
-                    f"[WORKER-{self.rank}] NCCL scatter received non-DataProto data, "
-                    f"replicating to all ranks"
-                )
-                scatter_list = [data] * self.world_size
+            # Prepare metadata to broadcast
+            metadata = {
+                "tensor_keys": tensor_keys,
+                "non_tensor_batch": sample_chunk.non_tensor_batch,
+                "meta_info": sample_chunk.meta_info,
+                "dp_size": dp_size,
+            }
+
+            # Add tensor shapes and dtypes
+            tensor_metadata = {}
+            if sample_chunk.batch is not None:
+                for key in tensor_keys:
+                    tensor = sample_chunk.batch[key]
+                    tensor_metadata[key] = {
+                        "shape": list(tensor.shape),
+                        "dtype": str(tensor.dtype),
+                    }
+            metadata["tensor_metadata"] = tensor_metadata
+
+            logger.info(
+                f"[WORKER-{self.rank}] Prepared metadata for {len(tensor_keys)} tensors, "
+                f"broadcasting to all ranks (dp_size={dp_size}, sp_size={sp_size})"
+            )
         else:
-            scatter_list = [None] * self.world_size
+            metadata = None
+            dp_chunks = None
 
-        # Scatter: each rank receives scatter_list[rank]
-        output_list: list[Any] = [None]
-        torch.distributed.scatter_object_list(output_list, scatter_list, src=src_rank)
+        # Broadcast metadata (small, uses broadcast_object_list but negligible memory)
+        metadata_list = [metadata]
+        torch.distributed.broadcast_object_list(metadata_list, src=src_rank)
+        metadata = metadata_list[0]
+
+        # Type narrowing: metadata is guaranteed to be non-None after broadcast
+        assert metadata is not None, "Metadata should not be None after broadcast"
+
+        # Step 3: Distribute tensors - choose optimal strategy based on topology
+        scattered_tensors = {}
+
+        if dp_size == 1:
+            # =====================================================================
+            # PURE SP MODE: All ranks get the SAME data. Use broadcast (not scatter)
+            # This avoids creating any scatter list on rank 0, saving massive GPU memory.
+            # Memory on rank 0 per tensor: O(1 tensor) instead of O(world_size × tensor)
+            # =====================================================================
+            logger.info(f"[WORKER-{self.rank}] Using broadcast mode (dp_size=1, pure SP)")
+            for key in metadata["tensor_keys"]:
+                tensor_meta = metadata["tensor_metadata"][key]
+                dtype = getattr(torch, tensor_meta["dtype"].split(".")[-1])
+
+                if self.rank == src_rank:
+                    # Move the single chunk to GPU for broadcast
+                    assert dp_chunks is not None
+                    output_tensor = dp_chunks[0].batch[key].to(device="cuda", dtype=dtype)
+                else:
+                    # Allocate empty tensor to receive broadcast
+                    output_tensor = torch.empty(
+                        tensor_meta["shape"],
+                        dtype=dtype,
+                        device="cuda",
+                    )
+
+                # Broadcast: rank 0 sends, all ranks receive (in-place)
+                torch.distributed.broadcast(output_tensor, src=src_rank)
+
+                scattered_tensors[key] = output_tensor
+
+            # Free dp_chunks on rank 0 after all tensors have been broadcast
+            if self.rank == src_rank:
+                del dp_chunks
+                torch.cuda.empty_cache()
+        else:
+            # =====================================================================
+            # DP + SP MODE: Different DP groups get different chunks, SP ranks in
+            # the same DP group get the same chunk. Use scatter with deduplicated
+            # GPU copies (one .cuda() per unique DP chunk, not per SP rank).
+            # Memory on rank 0 per tensor: O(dp_size × chunk) = O(full_tensor)
+            # instead of O(world_size × chunk) = O(sp_size × full_tensor)
+            # =====================================================================
+            logger.info(
+                f"[WORKER-{self.rank}] Using scatter mode (dp_size={dp_size}, sp_size={sp_size})"
+            )
+            for key in metadata["tensor_keys"]:
+                if self.rank == src_rank:
+                    assert dp_chunks is not None
+                    # CRITICAL: Move each unique DP chunk to GPU ONCE, then reuse
+                    # the reference for all SP ranks in that group. This avoids
+                    # sp_size duplicate .cuda() copies per chunk.
+                    tensor_scatter_list = []
+                    for dp_rank in range(dp_size):
+                        chunk_cuda = dp_chunks[dp_rank].batch[key].cuda()
+                        for _sp_rank in range(sp_size):
+                            tensor_scatter_list.append(chunk_cuda)  # Same GPU tensor ref
+                else:
+                    tensor_scatter_list = None
+
+                # Allocate output tensor on all ranks
+                tensor_meta = metadata["tensor_metadata"][key]
+                output_tensor = torch.empty(
+                    tensor_meta["shape"],
+                    dtype=getattr(torch, tensor_meta["dtype"].split(".")[-1]),
+                    device="cuda",
+                )
+
+                # Scatter this tensor
+                torch.distributed.scatter(output_tensor, tensor_scatter_list, src=src_rank)
+
+                # CRITICAL: Immediately free the scatter list on rank 0
+                if self.rank == src_rank:
+                    del tensor_scatter_list
+                    torch.cuda.empty_cache()
+
+                scattered_tensors[key] = output_tensor
+
+            # Free dp_chunks on rank 0 after all tensors are scattered
+            if self.rank == src_rank:
+                del dp_chunks
+                torch.cuda.empty_cache()
+
+        # Step 4: Reconstruct DataProto on each rank
+        if metadata["tensor_keys"]:
+            from tensordict import TensorDict
+
+            batch_size = scattered_tensors[metadata["tensor_keys"][0]].shape[0]
+            result_batch = TensorDict(source=scattered_tensors, batch_size=(batch_size,))
+        else:
+            result_batch = None
+
+        result = DataProto(
+            batch=result_batch,
+            non_tensor_batch=metadata["non_tensor_batch"],
+            meta_info=metadata["meta_info"],
+        )
 
         logger.info(
-            f"[WORKER-{self.rank}] ✓ DP-aware NCCL scatter complete (dp_size={dp_size}, sp_size={sp_size})"
+            f"[WORKER-{self.rank}] ✓ DP-aware per-tensor NCCL scatter complete "
+            f"(dp_size={dp_size}, sp_size={sp_size}, {len(metadata['tensor_keys'])} tensors, "
+            f"mode={'broadcast' if dp_size == 1 else 'scatter'})"
         )
-        return output_list[0]
+        return result
 
     def _nccl_gather_result(self, result: Any, dst_rank: int = 0) -> Any:
         """NCCL gather: all ranks send results to rank 0
 
+        MEMORY OPTIMIZATION: Uses per-tensor gather instead of gather_object to avoid
+        pickling all results into GPU memory simultaneously. Processes one tensor at a time
+        and immediately concatenates/frees to reduce peak GPU memory on rank 0.
+
         Args:
-            result: Result from this rank
+            result: Result from this rank (DataProto or other)
             dst_rank: Destination rank (default 0)
 
         Returns:
-            Gathered results list on rank 0, None on other ranks
+            Gathered results (concatenated DataProto) on rank 0, None on other ranks
         """
-        # Use gather_object for results
-        gather_list: Optional[list[Any]]
-        if self.rank == dst_rank:
-            gather_list = [None] * self.world_size
-        else:
-            gather_list = None
+        from ..utils.protocol import DataProto
 
-        torch.distributed.gather_object(result, gather_list, dst=dst_rank)
-
-        if self.rank == dst_rank:
-            assert gather_list is not None  # Type narrowing for mypy
-            logger.info(
-                f"[WORKER-{self.rank}] ✓ NCCL gather complete, received {len(gather_list)} results"
+        # Handle non-DataProto fallback with old method
+        if not isinstance(result, DataProto):
+            logger.warning(
+                f"[WORKER-{self.rank}] NCCL gather received non-DataProto result, "
+                f"using legacy gather_object (higher memory usage)"
             )
-            # Concatenate gathered DataProto results
-            from ..utils.protocol import DataProto
-
-            if gather_list and isinstance(gather_list[0], DataProto):
-                return DataProto.concat(gather_list)
+            gather_list: Optional[list[Any]]
+            if self.rank == dst_rank:
+                gather_list = [None] * self.world_size
             else:
-                # Return list as-is if not DataProto
-                return gather_list
+                gather_list = None
+            torch.distributed.gather_object(result, gather_list, dst=dst_rank)
+            return gather_list if self.rank == dst_rank else None
+
+        # Per-tensor gather for DataProto (memory-optimized)
+        # Step 1: Gather metadata about tensor structure
+        tensor_keys = list(result.batch.keys()) if result.batch is not None else []
+
+        # All ranks need to know the tensor keys (broadcast from rank 0 or gather info)
+        # For simplicity, use allgather for keys (tiny data)
+        all_keys = [None] * self.world_size
+        torch.distributed.all_gather_object(all_keys, tensor_keys)
+
+        # Verify all ranks have the same structure
+        if self.rank == dst_rank:
+            if not all(keys == all_keys[0] for keys in all_keys):
+                logger.error(
+                    f"[WORKER-{self.rank}] Rank structure mismatch in gather! "
+                    f"Different ranks have different tensor keys: {all_keys}"
+                )
+                # Fall back to object gather
+                gather_list_fallback: list[Any] = [None] * self.world_size
+                torch.distributed.gather_object(result, gather_list_fallback, dst=dst_rank)
+                return DataProto.concat(gather_list_fallback)
+
+        # Use the first rank's keys as canonical
+        canonical_keys = all_keys[0]
+        # Type narrowing: canonical_keys is guaranteed to be a list after all_gather_object
+        assert canonical_keys is not None, "Canonical keys should not be None after all_gather"
+
+        # Step 2: Gather each tensor individually
+        gathered_tensors = {}
+        for key in canonical_keys:
+            local_tensor = result.batch[key].cuda()  # Ensure on GPU
+
+            if self.rank == dst_rank:
+                # Allocate list to gather into
+                gather_list_tensors = [
+                    torch.empty_like(local_tensor) for _ in range(self.world_size)
+                ]
+            else:
+                gather_list_tensors = None
+
+            # Gather this tensor
+            torch.distributed.gather(local_tensor, gather_list_tensors, dst=dst_rank)
+
+            if self.rank == dst_rank:
+                # Concatenate immediately and free the list
+                gathered_tensors[key] = torch.cat(gather_list_tensors, dim=0)
+                del gather_list_tensors
+                torch.cuda.empty_cache()
+
+        # Step 3: Gather non_tensor_batch (small, use object gather)
+        non_tensor_batch_list = [None] * self.world_size if self.rank == dst_rank else None
+        torch.distributed.gather_object(
+            result.non_tensor_batch, non_tensor_batch_list, dst=dst_rank
+        )
+
+        # Step 4: Reconstruct DataProto on rank 0
+        if self.rank == dst_rank:
+            import numpy as np
+            from tensordict import TensorDict
+
+            # Type narrowing: non_tensor_batch_list is guaranteed to be non-None on dst_rank
+            assert (
+                non_tensor_batch_list is not None
+            ), "non_tensor_batch_list should not be None on dst_rank"
+
+            # Reconstruct batch
+            if canonical_keys:
+                total_batch_size = gathered_tensors[canonical_keys[0]].shape[0]
+                gathered_batch = TensorDict(source=gathered_tensors, batch_size=(total_batch_size,))
+            else:
+                gathered_batch = None
+
+            # Concatenate non_tensor_batch
+            gathered_non_tensor = {}
+            if result.non_tensor_batch:
+                for key in result.non_tensor_batch.keys():
+                    values = [ntb[key] for ntb in non_tensor_batch_list if key in ntb]
+                    if values:
+                        gathered_non_tensor[key] = np.concatenate(values, axis=0)
+
+            gathered_result = DataProto(
+                batch=gathered_batch,
+                non_tensor_batch=gathered_non_tensor,
+                meta_info=result.meta_info,  # Meta info assumed identical across ranks
+            )
+
+            logger.info(
+                f"[WORKER-{self.rank}] ✓ Per-tensor NCCL gather complete, "
+                f"received {self.world_size} results ({len(canonical_keys)} tensors)"
+            )
+            return gathered_result
         else:
             logger.info(f"[WORKER-{self.rank}] ✓ NCCL gather sent result to rank {dst_rank}")
             return None
@@ -736,6 +955,19 @@ class WorkerZMQCoordinator:
                                         f"[WORKER-{self.rank}] ✓ NCCL scatter complete, received data chunk"
                                     )
 
+                                    # MEMORY OPTIMIZATION: Explicit cleanup after scatter
+                                    # The original full data from pending_ops is no longer needed
+                                    # Free it before executing to reduce peak memory usage
+                                    if self.rank == 0:
+                                        # pending was already popped, but ensure any stale references are cleared
+                                        import gc
+
+                                        gc.collect()
+                                        torch.cuda.empty_cache()
+                                        logger.debug(
+                                            f"[WORKER-{self.rank}] Memory cleanup after scatter complete"
+                                        )
+
                                 # All workers execute with their data chunk
                                 if operation is None:
                                     raise ValueError(f"Operation is None for op_id={op_id}")
@@ -746,6 +978,10 @@ class WorkerZMQCoordinator:
                                     f"[WORKER-{self.rank}] ✓ Operation {operation} completed successfully"
                                 )
 
+                                # MEMORY OPTIMIZATION: Free input data after operation completes
+                                del data_proto
+                                torch.cuda.empty_cache()
+
                                 # If using NCCL gather, all workers send results to rank 0
                                 if use_nccl_scatter:
                                     logger.info(
@@ -753,16 +989,22 @@ class WorkerZMQCoordinator:
                                     )
                                     gathered_result = self._nccl_gather_result(result, dst_rank=0)
 
+                                    # MEMORY OPTIMIZATION: Free local result after gather
+                                    del result
+                                    torch.cuda.empty_cache()
+
                                     if self.rank == 0:
                                         # Rank 0 sends gathered result to client
                                         logger.info(
                                             f"[WORKER-{self.rank}] ✓ NCCL gather complete, sending to client"
                                         )
+                                        # Move result to CPU before sending via ZMQ (API server doesn't have CUDA)
+                                        gathered_result_cpu = gathered_result.to("cpu")
                                         response = {
                                             "rank": self.rank,
                                             "op_id": op_id,
                                             "success": True,
-                                            "result": gathered_result,
+                                            "result": gathered_result_cpu,
                                         }
                                         self.pusher.send_pyobj(response)
                                         logger.info(
@@ -775,11 +1017,15 @@ class WorkerZMQCoordinator:
                                         )
                                 else:
                                     # Legacy mode: all workers send results individually
+                                    # Move result to CPU before sending via ZMQ (API server doesn't have CUDA)
+                                    result_cpu = (
+                                        result.to("cpu") if hasattr(result, "to") else result
+                                    )
                                     response = {
                                         "rank": self.rank,
                                         "op_id": op_id,
                                         "success": True,
-                                        "result": result,
+                                        "result": result_cpu,
                                     }
                                     self.pusher.send_pyobj(response)
                                     logger.info(f"[WORKER-{self.rank}] ✓ Result sent successfully")
@@ -848,11 +1094,19 @@ class WorkerZMQCoordinator:
                                     f"[WORKER-{self.rank}] ✓ Operation {operation} completed successfully"
                                 )
 
+                                # MEMORY OPTIMIZATION: Free input data after operation completes
+                                del data_proto
+                                torch.cuda.empty_cache()
+
                                 # NCCL gather results to rank 0
                                 logger.info(
                                     f"[WORKER-{self.rank}] 🔄 NCCL gather starting to rank 0..."
                                 )
                                 gathered_result = self._nccl_gather_result(result, dst_rank=0)
+
+                                # MEMORY OPTIMIZATION: Free local result after gather
+                                del result
+                                torch.cuda.empty_cache()
 
                                 # Other ranks don't send results (already gathered to rank 0)
                                 logger.info(

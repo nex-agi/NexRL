@@ -84,6 +84,7 @@ class MockRolloutWorker(BaseRolloutWorker):
         self._loaded_trajectories: list[Trajectory] = []
         self._traj_key_map: dict[tuple, Trajectory] = {}  # Map (group_id, run_id) -> trajectory
         self._trajectory_index: int = 0
+        self._all_loaded_into_pool: bool = False  # True after bulk-loading all trajectories
 
         if self._trajectory_load_path and Path(self._trajectory_load_path).exists():
             logger.info(f"Begin loading trajectories from {self._trajectory_load_path}")
@@ -232,32 +233,39 @@ class MockRolloutWorker(BaseRolloutWorker):
 
         # If we have loaded trajectories, use them instead of generating
         if self._loaded_trajectories:
-            group_id = str(task.get("group_id") or task.get("uid", ""))
-            run_id = int(task.get("run_id", 0))
-            key = (group_id, run_id)
-
-            # Try to find trajectory by (group_id, run_id)
-            if key in self._traj_key_map:
-                trajectory = self._traj_key_map[key]
-                self._processed_count += 1
-                logger.debug(
-                    f"Mock rollout worker: Replaying trajectory by key={key}, reward={trajectory.reward}"
+            # On the first call, bulk-load ALL trajectories into the pool at once.
+            # This ensures the trajectory pool sees the full dataset (not just one
+            # trajectory per dataloader item). Subsequent dataloader items are
+            # consumed without putting anything -- they just drain the dataloader
+            # so the pool's "loaded_batch_finished" check can fire.
+            if not self._all_loaded_into_pool:
+                self._all_loaded_into_pool = True
+                success_count = 0
+                fail_count = 0
+                for traj in self._loaded_trajectories:
+                    result = self._put_trajectory(traj)
+                    if result == "success":
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                        logger.warning(
+                            f"Mock rollout worker: Failed to put trajectory during bulk load: {result}"
+                        )
+                self._processed_count += success_count
+                logger.info(
+                    f"Mock rollout worker: Bulk-loaded {success_count} trajectories into pool "
+                    f"({fail_count} failures, {len(self._loaded_trajectories)} total loaded from file)"
                 )
-                return self._put_trajectory(trajectory)
+                return None
 
-            # Fallback: use sequential index
-            if self._trajectory_index >= len(self._loaded_trajectories):
-                logger.warning(
-                    f"Reached end of loaded trajectories ({len(self._loaded_trajectories)}), wrapping around"
-                )
-                self._trajectory_index = 0
-            trajectory = self._loaded_trajectories[self._trajectory_index]
-            self._trajectory_index += 1
-            self._processed_count += 1
-            logger.info(
-                f"Mock rollout worker: Replaying trajectory #{self._processed_count} (sequential, key={key} not found), reward={trajectory.reward}"
+            # Subsequent calls: just consume the dataloader item without putting
+            # anything. This drains the dataloader so the trajectory pool's
+            # batch-ready check (loaded_batch_finished) can trigger.
+            logger.debug(
+                "Mock rollout worker: Consuming dataloader item "
+                "(all trajectories already bulk-loaded into pool)"
             )
-            return self._put_trajectory(trajectory)
+            return None
 
         # Otherwise, generate mock trajectory
         # GRPO grouping fields: propagate from task (preferred), otherwise generate defaults.

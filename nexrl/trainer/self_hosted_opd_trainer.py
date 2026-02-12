@@ -376,8 +376,15 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         if not self._teacher_initialized:
             self._initialize_teacher_workers()
 
-        # Prepare data for teacher
-        teacher_batch = batch.to_nextrainer_batch()
+        # Trim batch to only include fields required by the backend's compute_log_prob
+        _BACKEND_COMPUTE_LOG_PROB_KEYS = [
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "responses",
+            "scoring_attention_mask",
+        ]
+        teacher_batch = batch.trim_for_backend(_BACKEND_COMPUTE_LOG_PROB_KEYS).to_nextrainer_batch()
 
         # Get teacher LOG PROBABILITIES using compute_log_prob API
         with self._teacher_client.actor_context():
@@ -397,8 +404,16 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         Returns:
             Old log probabilities tensor
         """
+        _BACKEND_COMPUTE_LOG_PROB_KEYS = [
+            "input_ids",
+            "attention_mask",
+            "position_ids",
+            "responses",
+            "scoring_attention_mask",
+        ]
+        trimmed = batch.trim_for_backend(_BACKEND_COMPUTE_LOG_PROB_KEYS)
         with self._train_service_client.actor_context():
-            ret = self._train_service_client.compute_log_prob(batch.to_nextrainer_batch())
+            ret = self._train_service_client.compute_log_prob(trimmed.to_nextrainer_batch())
         old_log_probs: torch.Tensor = ret["batch"]["old_log_probs"]
         return old_log_probs
 
@@ -607,8 +622,20 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
 
             # Update actor with distillation (key difference from base class)
             update_actor_start_time = time.time()
+
+            # Trim batch to only include fields required by the backend to reduce
+            # network traffic and GPU memory.
+            _BACKEND_DISTILLATION_KEYS = [
+                "input_ids",
+                "attention_mask",
+                "position_ids",
+                "responses",
+                "teacher_log_probs",
+                "old_student_log_probs",
+            ]
+            backend_batch = batch.trim_for_backend(_BACKEND_DISTILLATION_KEYS)
             actor_output = self._train_service_client.update_actor_with_distillation(
-                batch.to_nextrainer_batch()
+                backend_batch.to_nextrainer_batch()
             )
             update_actor_time = time.time() - update_actor_start_time
             train_metrics = self._reduce_metrics(actor_output["meta_info"]["metrics"])
