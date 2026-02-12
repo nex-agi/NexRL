@@ -60,6 +60,8 @@ Cross-cutting features.
 - [Validation](./08-features/validation.md) - Validator, validation cycles, metrics computation
 - [Checkpointing](./08-features/checkpointing.md) - Checkpoint management, resume modes, loading
 - [Error Handling](./08-features/error-handling.md) - ErrorReporter, health checking, error policies
+- [Tool Parser](./08-features/tool-parser.md) - Flexible tool call parsing framework for different model formats
+- [Reasoning Parser](./08-features/reasoning-parser.md) - Extract and structure reasoning content from model responses
 
 ### ✅ 09. Recipes
 Recipe development and structure.
