@@ -148,6 +148,7 @@ def render_driver_volcanojob(
     tinker_base_url: str | None = None,
     weaver_api_key: str | None = None,
     weaver_base_url: str | None = None,
+    debug_hydra_overrides: str = "",
 ) -> str:
     """Render NexRL driver VolcanoJob YAML."""
     template_path = Path(__file__).parent / "templates" / "driver_job.yaml.jinja"
@@ -182,6 +183,7 @@ def render_driver_volcanojob(
         tinker_base_url=tinker_base_url,
         weaver_api_key=weaver_api_key,
         weaver_base_url=weaver_base_url,
+        debug_hydra_overrides=debug_hydra_overrides,
         minAvailable=1,
         globalMinAvailable=1 + num_agent_workers,
     )

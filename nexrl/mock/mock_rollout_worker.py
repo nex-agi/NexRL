@@ -86,11 +86,24 @@ class MockRolloutWorker(BaseRolloutWorker):
         self._trajectory_index: int = 0
 
         if self._trajectory_load_path and Path(self._trajectory_load_path).exists():
+            logger.info(f"Begin loading trajectories from {self._trajectory_load_path}")
             self._load_trajectories()
+            logger.info(
+                f"Finished loading trajectories from {self._trajectory_load_path}. Building traj_key_map..."
+            )
             self._build_traj_key_map()
             logger.info(
                 f"MockRolloutWorker initialized with {len(self._loaded_trajectories)} loaded trajectories from {self._trajectory_load_path} (format: {self._trajectory_format})"
             )
+
+            # Warn if using multiple workers with trajectory loading (wasteful)
+            num_workers = config.get("resource", {}).get("num_workers", 1)
+            if num_workers > 1:
+                logger.warning(
+                    f"MockRolloutWorker is loading trajectories on {num_workers} workers. "
+                    "This is wasteful as each worker loads the entire file. "
+                    "Consider setting rollout_worker.resource.num_workers=1 for trajectory reuse."
+                )
         else:
             logger.info(
                 "MockRolloutWorker initialized with MockInferenceServiceClient (generating mock trajectories)"
@@ -129,7 +142,7 @@ class MockRolloutWorker(BaseRolloutWorker):
                 key = (str(group_id), int(run_id))
                 self._traj_key_map[key] = traj
         if self._traj_key_map:
-            logger.info(
+            logger.debug(
                 f"Built traj_key_map with {len(self._traj_key_map)} entries: {list(self._traj_key_map.keys())}"
             )
 
@@ -227,7 +240,7 @@ class MockRolloutWorker(BaseRolloutWorker):
             if key in self._traj_key_map:
                 trajectory = self._traj_key_map[key]
                 self._processed_count += 1
-                logger.info(
+                logger.debug(
                     f"Mock rollout worker: Replaying trajectory by key={key}, reward={trajectory.reward}"
                 )
                 return self._put_trajectory(trajectory)

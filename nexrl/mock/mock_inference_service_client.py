@@ -115,7 +115,6 @@ class MockInferenceServiceClient(InferenceServiceClient):
 
         # Use mock tokenizer instead of loading from HuggingFace
         self.tokenizer = MockTokenizer()
-        logger.info("MockInferenceServiceClient initialized with mock tokenizer")
 
     def apply_chat_template(
         self,

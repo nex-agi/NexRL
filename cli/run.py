@@ -80,6 +80,15 @@ Examples:
         default="",
         help="[self-hosted only] Use existing inference service URL (skips launching inference). Do not include http:// prefix.",
     )
+    parser.add_argument(
+        "--debug-mode", action="store_true", help="Enable debug mode for trajectory dump/load"
+    )
+    parser.add_argument(
+        "--debug-baseline-path",
+        type=str,
+        default="",
+        help="Path to baseline experiment for trajectory reuse (optional, for non-interactive mode)",
+    )
 
     args = parser.parse_args()
 
@@ -103,6 +112,10 @@ Examples:
         sys.argv.extend(["--tag", args.tag])
     if args.inference_url:
         sys.argv.extend(["--inference-url", args.inference_url])
+    if args.debug_mode:
+        sys.argv.append("--debug-mode")
+    if args.debug_baseline_path:
+        sys.argv.extend(["--debug-baseline-path", args.debug_baseline_path])
 
     launcher_main()
 
