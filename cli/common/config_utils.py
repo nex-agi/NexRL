@@ -29,11 +29,14 @@ def migrate_legacy_config(cfg: dict) -> dict:
     """Centralized migration of all legacy config structures.
 
     This function handles ALL backward compatibility transformations:
-    1. model_tag → identifier
-    2. resource.train → service.train_service.*.resource
-    3. resource.inference → service.inference_service.resource
-    4. resource.agent → rollout_worker.resource
-    5. Flat train_service → nested with role
+    1. model_tag → identifier (inference_service)
+    2. Flat train_service → nested with role
+    3. model_tag → identifier (train_service)
+    4. Add missing role fields
+    5. backend: http/nextrainer → direct-zmq
+    6. resource.train → service.train_service.*.resource
+    7. resource.inference → service.inference_service.resource
+    8. resource.agent → rollout_worker.resource
 
     To remove backward compatibility in v3.0: just delete this function and its calls.
     """
@@ -117,7 +120,22 @@ def migrate_legacy_config(cfg: dict) -> dict:
             migrations_applied.append(f"train_service.{service_name}: added role='actor'")
 
     # ============================================================================
-    # 5. Migrate resource.train → train_service.*.resource
+    # 5. Migrate train service backend: http/nextrainer → direct-zmq
+    # ============================================================================
+    if "train_service" in cfg.get("service", {}):
+        train_service = cfg["service"]["train_service"]
+        for service_name, service_config in train_service.items():
+            if not isinstance(service_config, dict):
+                continue
+            backend = service_config.get("backend")
+            if backend in ["http", "nextrainer"]:
+                service_config["backend"] = "direct-zmq"
+                migrations_applied.append(
+                    f"train_service.{service_name}.backend: {backend} → direct-zmq"
+                )
+
+    # ============================================================================
+    # 6. Migrate resource.train → train_service.*.resource
     # ============================================================================
     old_train_resources = (cfg.get("resource") or {}).get("train")
     if (
@@ -164,7 +182,7 @@ def migrate_legacy_config(cfg: dict) -> dict:
                 )
 
     # ============================================================================
-    # 6. Migrate resource.inference → inference_service.resource
+    # 7. Migrate resource.inference → inference_service.resource
     # ============================================================================
     old_inference = (cfg.get("resource") or {}).get("inference")
     if old_inference and "inference_service" in cfg.get("service", {}):
@@ -204,7 +222,7 @@ def migrate_legacy_config(cfg: dict) -> dict:
                 )
 
     # ============================================================================
-    # 7. Migrate resource.agent → rollout_worker.resource
+    # 8. Migrate resource.agent → rollout_worker.resource
     # ============================================================================
     old_agent = (cfg.get("resource") or {}).get("agent")
     if old_agent:

@@ -23,7 +23,7 @@ description = "An ultra-loosely-coupled LLM post-training framework by Nex-AGI T
 requires-python = ">=3.12"
 dependencies = [
     "torch==2.7.1",
-    "transformers==4.56.2",
+    "transformers>=4.56.2",
     "tensordict==0.7.2",
     "numpy==1.26.4",
     "omegaconf==2.3.0",

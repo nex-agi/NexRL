@@ -484,30 +484,24 @@ class FSDPUlyssesShardingManager:
 
     def preprocess_data(self, data: DataProto) -> DataProto:
         """
-        AllGather data from sp region
-        This is because the data is first sharded along the FSDP dimension as we utilize the DP_COMPUTE
-        In Ulysses, we need to make sure the same data is used across a SP group
+        AllGather data from sp region (NO LONGER NEEDED with DP-aware NCCL scatter)
+
+        Previously: Data was first sharded along the FSDP dimension, so we needed all-gather
+        to ensure the same data is used across a SP group.
+
+        Now: With DP-aware NCCL scatter, all workers in the same DP group already receive
+        the SAME data. The all-gather is redundant and has been removed for efficiency.
+
+        This function now just moves data to GPU without any communication.
         """
         if self.device_mesh is not None:
-            sp_size = self.device_mesh["sp"].size()
-            group = self.device_mesh["sp"].get_group()
-
+            # Just move data to GPU, no all-gather needed
             prev_device = data.batch.device
             data.batch = data.batch.cuda(device=torch.cuda.current_device())
-            data.batch = allgather_dict_tensors(
-                data.batch.contiguous(), size=sp_size, group=group, dim=0
-            )
             data.batch = data.batch.to(prev_device)
 
-            # all gather non_tensor_batch
-            all_non_tensor_batch: list[dict[str, Any]] = [None for _ in range(sp_size)]  # type: ignore
-            torch.distributed.all_gather_object(
-                all_non_tensor_batch, data.non_tensor_batch, group=group
-            )
-            data.non_tensor_batch = {
-                k: np.concatenate([d[k] for d in all_non_tensor_batch])
-                for k in data.non_tensor_batch
-            }
+            # Note: All workers in same DP group already have identical data from NCCL scatter
+            # No need for all-gather or concatenation
         return data
 
     def postprocess_data(self, data: DataProto) -> DataProto:

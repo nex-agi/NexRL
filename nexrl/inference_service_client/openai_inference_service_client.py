@@ -71,6 +71,9 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
     Encapsulates OpenAI client and provides completion and generation methods.
     """
 
+    # Class-level tokenizer cache to share tokenizers across instances
+    _tokenizer_cache: dict[str, Any] = {}
+
     def __init__(self, config: DictConfig):
         """
         Initialize the OpenAI inference service client.
@@ -136,7 +139,6 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         Returns:
             str | list[int]: Formatted prompt string or token IDs
         """
-
         try:
             messages_copy = deepcopy(messages)
 
@@ -205,11 +207,13 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         max_retries = self._config.inference_service.max_retries
         completion = None
 
+        kwargs.pop("model", None)  # Remove model if present, don't error if missing
+
         for _ in range(max_retries):
             try:
                 kwargs.pop("logprobs", None)  # Remove logprobs if present, don't error if missing
                 completion = self._oai_llm.completions.create(
-                    model=kwargs.pop("model", self._config.inference_service.model),
+                    model=self._config.inference_service.model,
                     prompt=prompt,
                     max_tokens=kwargs.pop("max_tokens", self._config.inference_service.max_tokens),
                     temperature=kwargs.pop("temperature", self._config.temperature),
@@ -302,13 +306,15 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         extra_body["include_stop_str_in_output"] = True
         extra_body["min_tokens"] = 2
 
+        kwargs.pop("model", None)  # Remove model if present, don't error if missing
+
         max_retries = self._config.inference_service.max_retries
         completion = None
         for _ in range(max_retries):
             try:
                 kwargs.pop("logprobs", None)  # Remove logprobs if present, don't error if missing
                 completion = self._oai_llm.chat.completions.create(
-                    model=kwargs.pop("model", self._config.inference_service.model),
+                    model=self._config.inference_service.model,
                     messages=messages,  # type: ignore  # mypy does not recognize this
                     max_tokens=kwargs.pop("max_tokens", self._config.inference_service.max_tokens),
                     temperature=kwargs.pop("temperature", self._config.temperature),

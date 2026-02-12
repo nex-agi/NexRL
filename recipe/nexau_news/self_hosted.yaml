@@ -96,7 +96,7 @@ service:
     main_actor:
       identifier: "default"
       role: "actor"
-      backend: http
+      backend: direct-zmq
       url: "http://${oc.env:API_SERVER_URL}:8000"
 
       resource:

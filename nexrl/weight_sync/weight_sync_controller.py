@@ -324,6 +324,7 @@ class WeightSyncController(NexRLModule):
         if self._config.sync_method == "network":
             rollout_service = self._rollout_services[model_tag]
             if rollout_service.backend in ("vllm", "sglang"):
+                logger.info(f"Updating weights to {rollout_service.base_url}")
                 t0 = time.time()
                 response = requests.post(
                     rollout_service.base_url + "/update_weights",
@@ -332,7 +333,7 @@ class WeightSyncController(NexRLModule):
                         "weight_type": rollout_service.weight_type,
                         "weight_path": rollout_service.weight_path,
                     },
-                    timeout=600,
+                    timeout=3000,
                 )
                 t1 = time.time()
                 logger.info(f"Finish updating weights in {t1 - t0} seconds")
@@ -369,7 +370,7 @@ class WeightSyncController(NexRLModule):
                         async with session.post(
                             worker_url + "/update_weights_from_disk",
                             json={"model_path": rollout_service.weight_path},
-                            timeout=aiohttp.ClientTimeout(total=600),
+                            timeout=aiohttp.ClientTimeout(total=3000),
                         ) as resp:
                             if resp.status != 200:
                                 text = await resp.text()
