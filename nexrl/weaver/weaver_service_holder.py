@@ -22,8 +22,10 @@ holder but uses the synchronous Weaver SDK.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from copy import deepcopy
 from typing import Any
 
 try:
@@ -123,8 +125,36 @@ class WeaverServiceHolder:
         add_generation_prompt: bool = True,
         tokenize: bool = False,
     ) -> str | list[int]:
+        # Deep-copy so we don't mutate the caller's data
+        messages_copy = deepcopy(messages)
+
+        # Ensure tool_call function.arguments are dicts, not JSON strings.
+        # Chat templates use Jinja2 .items() on arguments, which requires a mapping.
+        for message in messages_copy:
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                continue
+            for tool_call in tool_calls:
+                function = tool_call.get("function")
+                if not function:
+                    continue
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    if arguments != "":
+                        try:
+                            function["arguments"] = json.loads(arguments, strict=False)
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                f"Failed to parse tool call arguments as JSON: {e}, "
+                                f"keeping as string: {arguments[:100]}"
+                            )
+                    else:
+                        function["arguments"] = {}
+                elif arguments is None:
+                    function["arguments"] = {}
+
         return self._tokenizer.apply_chat_template(
-            messages,
+            messages_copy,
             add_generation_prompt=add_generation_prompt,
             tokenize=tokenize,
             tools=tools,
@@ -139,12 +169,25 @@ class WeaverServiceHolder:
         tools: list[dict[str, Any]] | None = None,
         stop: list[str] | None = None,
     ) -> dict:
+        import traceback
+
         from weaver import types as weaver_types
 
-        prompt_tokens = self.apply_chat_template(
-            messages, tools=tools, add_generation_prompt=True, tokenize=True
-        )
-        model_input = weaver_types.ModelInput.from_ints(prompt_tokens)  # type: ignore[arg-type]
+        try:
+            prompt_tokens = self.apply_chat_template(
+                messages, tools=tools, add_generation_prompt=True, tokenize=True
+            )
+        except Exception as e:
+            logger.error(f"Error in apply_chat_template: {e}")
+            logger.error(traceback.format_exc())
+            raise e
+
+        try:
+            model_input = weaver_types.ModelInput.from_ints(prompt_tokens)  # type: ignore[arg-type]
+        except Exception as e:
+            logger.error(f"Error in ModelInput.from_ints: {e}")
+            logger.error(traceback.format_exc())
+            raise e
 
         sampling_params = weaver_types.SamplingParams(
             max_tokens=max_tokens,
@@ -152,40 +195,74 @@ class WeaverServiceHolder:
             stop=stop or [],
         )
 
-        sample_result = self._sampling_client.sample(
-            prompt=model_input,
-            num_samples=num_samples,
-            sampling_params=sampling_params,
-            include_prompt_logprobs=False,
-            wait=True,
-        )
+        try:
+            sample_result = self._sampling_client.sample(
+                prompt=model_input,
+                num_samples=num_samples,
+                sampling_params=sampling_params,
+                include_prompt_logprobs=False,
+                wait=True,
+            )
+        except Exception as e:
+            logger.error(f"Error in sample: {e}")
+            logger.error(traceback.format_exc())
+            raise e
 
-        sequence = sample_result.get("sequences")[0]
-        response_tokens = list(sequence["tokens"]) or []
-        response_logprobs = list(sequence["logprobs"]) or []
+        try:
+            sequence = sample_result.get("sequences")[0]
+            response_tokens = list(sequence["tokens"]) or []
+            response_logprobs = list(sequence["logprobs"]) or []
 
-        response = sequence.get("text") or self._tokenizer.decode(
-            response_tokens, skip_special_tokens=True
-        )
+            full_response = sequence.get("text") or self._tokenizer.decode(
+                response_tokens, skip_special_tokens=True
+            )
+        except Exception as e:
+            logger.error(f"Error in sequence: {e}")
+            logger.error(traceback.format_exc())
+            raise e
 
-        tool_calls: list[dict[str, Any]] | None = None
+        # Extract raw tool string and reasoning string if present (parsing happens in inference client)
+        tool_string: str | None = None
+        reasoning_string: str | None = None
+        cleaned_response = full_response
         import re
 
-        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", response, re.DOTALL)
+        # Extract reasoning string (only the reasoning portion, not the rest)
+        if "</think>" in full_response:
+            # Extract everything up to and including </think>
+            reasoning_match = re.search(r"^(.*?</think>)", full_response, flags=re.DOTALL)
+            if reasoning_match:
+                reasoning_string = reasoning_match.group(0)  # group(0) = entire match
+            # Remove reasoning content from response
+            cleaned_response = re.sub(
+                r"^(<think>)?(.*?)</think>\s*", "", full_response, flags=re.DOTALL
+            )
+
+        # Extract tool call string (from the cleaned response or full response)
+        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", full_response, re.DOTALL)
         if tool_call_match:
-            tool_calls = self._parse_and_normalize_tool_call(tool_call_match.group(1))
+            tool_string = tool_call_match.group(0)  # Return full match including tags
+
+        # Remove tool call tags from response
+        if tool_string:
+            cleaned_response = re.sub(
+                r"<tool_call>.*?</tool_call>\s*", "", cleaned_response, flags=re.DOTALL
+            )
+
+        cleaned_response = cleaned_response.strip()
 
         finish_reason = sequence.get("stop_reason") or (
             "stop" if len(response_tokens) < max_tokens else "length"
         )
 
         return {
-            "response": response,
+            "response": cleaned_response,
             "prompt_tokens": prompt_tokens,
             "response_tokens": response_tokens,
             "response_logprobs": response_logprobs,
             "finish_reason": finish_reason,
-            "tool_calls": tool_calls,
+            "tool_string": tool_string,
+            "reasoning_string": reasoning_string,
             "is_valid": True,
         }
 
@@ -231,7 +308,7 @@ class WeaverServiceHolder:
             "response_tokens": response_tokens,
             "response_logprobs": response_logprobs,
             "finish_reason": finish_reason,
-            "tool_calls": None,
+            "tool_string": None,
             "is_valid": True,
         }
 
@@ -400,61 +477,3 @@ class WeaverServiceHolder:
 
     def get_tokenizer(self):
         return self._tokenizer
-
-    def _parse_and_normalize_tool_call(self, tool_call_str: str) -> list[dict[str, Any]] | None:
-        """
-        Parse tool call JSON string and normalize to OpenAI format.
-
-        Expects JSON string like: {"name": str, "args": dict, "id": Optional[str]}
-        Returns normalized format: [{"id": str, "type": "function", "function": {"name": str, "arguments": str}}]
-        """
-        import json
-        import uuid
-
-        try:
-            tool_call = json.loads(tool_call_str)
-        except json.JSONDecodeError:
-            return None
-
-        if not isinstance(tool_call, dict):
-            return None
-
-        name = tool_call.get("name")
-        args = tool_call.get("arguments")
-        tool_id = tool_call.get("id")
-
-        if not isinstance(name, str):
-            return None
-
-        # Normalize arguments to JSON string per OpenAI format
-        if args is None:
-            arguments_str = "{}"
-        elif isinstance(args, str):
-            arguments_str = args
-        elif isinstance(args, dict):
-            try:
-                arguments_str = json.dumps(args)
-            except Exception:
-                logger.warning(
-                    f"Failed to json-serialize tool_call args, falling back to str: {args}"
-                )
-                arguments_str = str(args)
-        else:
-            arguments_str = str(args)
-
-        # Ensure tool_id is string or generate one
-        if tool_id is not None and not isinstance(tool_id, str):
-            tool_id = None
-        if tool_id is None:
-            tool_id = f"tinker-tool-call-{uuid.uuid4().hex}"
-
-        normalized = [
-            {
-                "id": tool_id,
-                "type": "function",
-                "function": {"name": name, "arguments": arguments_str},
-            }
-        ]
-
-        logger.info(f"Normalized tool calls: {normalized}")
-        return normalized

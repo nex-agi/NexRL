@@ -19,7 +19,9 @@ This class owns tokenizer, renderer, and all Tinker clients.
 All tokenization and response parsing happens inside this holder.
 """
 
+import json
 import logging
+from copy import deepcopy
 from typing import Any
 
 try:
@@ -109,64 +111,6 @@ class TinkerServiceHolder:
 
         logger.info("Initialized TinkerServiceHolder")
 
-    def _parse_and_normalize_tool_call(self, tool_call_str: str) -> list[dict[str, Any]] | None:
-        """
-        Parse tool call JSON string and normalize to OpenAI format.
-
-        Expects JSON string like: {"name": str, "args": dict, "id": Optional[str]}
-        Returns normalized format: [{"id": str, "type": "function", "function": {"name": str, "arguments": str}}]
-        """
-        import json
-        import uuid
-
-        try:
-            tool_call = json.loads(tool_call_str)
-        except json.JSONDecodeError:
-            return None
-
-        if not isinstance(tool_call, dict):
-            return None
-
-        name = tool_call.get("name")
-        args = tool_call.get("arguments")
-        tool_id = tool_call.get("id")
-
-        if not isinstance(name, str):
-            return None
-
-        # Normalize arguments to JSON string per OpenAI format
-        if args is None:
-            arguments_str = "{}"
-        elif isinstance(args, str):
-            arguments_str = args
-        elif isinstance(args, dict):
-            try:
-                arguments_str = json.dumps(args)
-            except Exception:
-                logger.warning(
-                    f"Failed to json-serialize tool_call args, falling back to str: {args}"
-                )
-                arguments_str = str(args)
-        else:
-            arguments_str = str(args)
-
-        # Ensure tool_id is string or generate one
-        if tool_id is not None and not isinstance(tool_id, str):
-            tool_id = None
-        if tool_id is None:
-            tool_id = f"tinker-tool-call-{uuid.uuid4().hex}"
-
-        normalized = [
-            {
-                "id": tool_id,
-                "type": "function",
-                "function": {"name": name, "arguments": arguments_str},
-            }
-        ]
-
-        logger.info(f"Normalized tool calls: {normalized}")
-        return normalized
-
     def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
@@ -186,8 +130,36 @@ class TinkerServiceHolder:
         Returns:
             str | list[int]: Formatted prompt string or token IDs
         """
+        # Deep-copy so we don't mutate the caller's data
+        messages_copy = deepcopy(messages)
+
+        # Ensure tool_call function.arguments are dicts, not JSON strings.
+        # Chat templates use Jinja2 .items() on arguments, which requires a mapping.
+        for message in messages_copy:
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                continue
+            for tool_call in tool_calls:
+                function = tool_call.get("function")
+                if not function:
+                    continue
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    if arguments != "":
+                        try:
+                            function["arguments"] = json.loads(arguments, strict=False)
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                f"Failed to parse tool call arguments as JSON: {e}, "
+                                f"keeping as string: {arguments[:100]}"
+                            )
+                    else:
+                        function["arguments"] = {}
+                elif arguments is None:
+                    function["arguments"] = {}
+
         return self._tokenizer.apply_chat_template(
-            messages,
+            messages_copy,
             add_generation_prompt=add_generation_prompt,
             tokenize=tokenize,
             tools=tools,
@@ -258,10 +230,10 @@ class TinkerServiceHolder:
         logger.debug(f"Parsed message: {parsed_message}")
 
         response = parsed_message["content"]
-        tool_calls = parsed_message.get("tool_calls")
+        tool_string = parsed_message.get("tool_string")
 
         logger.debug(
-            f"parsed_message keys: {parsed_message.keys()}, is_valid: {is_valid}, response: {response}, tool_calls: {tool_calls}"
+            f"parsed_message keys: {parsed_message.keys()}, is_valid: {is_valid}, response: {response}, tool_string: {tool_string}"
         )
 
         # Determine finish reason
@@ -273,30 +245,53 @@ class TinkerServiceHolder:
             "response_tokens": response_tokens,
             "response_logprobs": response_logprobs,
             "finish_reason": finish_reason,
-            "tool_calls": tool_calls,
+            "tool_string": tool_string,
             "is_valid": is_valid,
         }
 
     def _parse_response(self, response_tokens: list[int]) -> tuple[dict[str, Any], bool]:
         """
-        Parse response tokens using the renderer.
+        Parse response tokens and extract raw tool string and reasoning string if present.
+        Remove tool call and reasoning tags from the main content.
+        Tool and reasoning parsing happens in inference client, not here.
         """
-        str_response = self._tokenizer.decode(response_tokens, skip_special_tokens=True)
+        full_response = self._tokenizer.decode(response_tokens, skip_special_tokens=True)
         import re
 
-        match = re.search(r"<tool_call>(.*?)</tool_call>", str_response, re.DOTALL)
+        tool_string = None
+        reasoning_string = None
+        cleaned_content = full_response
 
-        if match:
-            tool_calls = self._parse_and_normalize_tool_call(match.group(1))
-            if tool_calls is None:
-                return {"role": "assistant", "content": str_response}, False
-            else:
-                return {
-                    "role": "assistant",
-                    "content": str_response,
-                    "tool_calls": tool_calls,
-                }, True
-        return {"role": "assistant", "content": str_response}, True
+        # Extract reasoning string (only the reasoning portion, not the rest)
+        if "</think>" in full_response:
+            # Extract everything up to and including </think>
+            reasoning_match = re.search(r"^(.*?</think>)", full_response, flags=re.DOTALL)
+            if reasoning_match:
+                reasoning_string = reasoning_match.group(0)  # group(0) = entire match
+            # Remove reasoning content from response
+            cleaned_content = re.sub(
+                r"^(<think>)?(.*?)</think>\s*", "", full_response, flags=re.DOTALL
+            )
+
+        # Extract tool string (from the full response)
+        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", full_response, re.DOTALL)
+        if tool_call_match:
+            tool_string = tool_call_match.group(0)
+
+        # Remove tool call tags from content
+        if tool_string:
+            cleaned_content = re.sub(
+                r"<tool_call>.*?</tool_call>\s*", "", cleaned_content, flags=re.DOTALL
+            )
+
+        cleaned_content = cleaned_content.strip()
+
+        return {
+            "role": "assistant",
+            "content": cleaned_content,
+            "tool_string": tool_string,
+            "reasoning_string": reasoning_string,
+        }, True
 
     def sample_from_prompt(
         self,
@@ -359,7 +354,7 @@ class TinkerServiceHolder:
             "response_tokens": response_tokens,
             "response_logprobs": response_logprobs,
             "finish_reason": finish_reason,
-            "tool_calls": None,
+            "tool_string": None,
             "is_valid": True,
         }
 

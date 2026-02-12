@@ -85,6 +85,8 @@ When updating documentation:
 6. **Link between docs** - Reference related documentation files
 7. **Maintain consistency** - Follow the existing documentation style
 8. **Include configuration examples** - Show relevant YAML/Python config snippets
+9. **Keep the docs short and easy to read** - Each doc should usually be less than 300 lines
+
 
 ## Common Documentation Tasks
 

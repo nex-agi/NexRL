@@ -224,6 +224,76 @@ weight_type: "sglang_nckpt"
 weight_type: "vllm_ckpt"
 ```
 
+### tool_parser
+
+**Type:** `string`
+**Default:** `"qwen25"`
+
+Tool call parser type for extracting structured tool calls from model responses.
+
+**Options:**
+- `qwen25` - Qwen 2.5 format (default)
+- `qwen3_coder` - Qwen 3 Coder format
+- `gpt_oss` - GPT-OSS format
+- `deepseekv31` - DeepSeek V3.1 format
+- `simple_xml` - Simple XML format
+
+**Example:**
+```yaml
+inference_service:
+  tool_parser: "qwen25"  # Default
+```
+
+**See Also:** [Tool Parser Documentation](../08-features/tool-parser.md)
+
+### reasoning_parser
+
+**Type:** `string`
+**Default:** `"think_tag"`
+
+Reasoning parser detector type for extracting thinking/reasoning content from model responses.
+
+**Options:**
+- `think_tag` - Default simple parser (no streaming)
+- `qwen3` - Qwen3 detector (streaming support)
+- `deepseek_r1` - DeepSeek R1 detector (forced reasoning)
+- `kimi` - Kimi model detector (special markers)
+- `step3` - Step3/Step3.5 detector
+- `nano_v3` - NanoV3 detector
+- `minimax_append_think` - MiniMax special handling
+
+**Examples:**
+```yaml
+# Default - stable, simple
+inference_service:
+  reasoning_parser: "think_tag"
+
+# Qwen3 models with streaming
+inference_service:
+  reasoning_parser: "qwen3"
+
+# DeepSeek R1
+inference_service:
+  reasoning_parser: "deepseek_r1"
+
+# Kimi model
+inference_service:
+  reasoning_parser: "kimi"
+```
+
+**Comparison:**
+
+| Detector | Streaming | Use For |
+|----------|-----------|---------|
+| `think_tag` | ❌ | Default/Generic, production stable |
+| `qwen3` | ✅ | Qwen3, DeepSeek-V3, GLM-4.5, MiniMax |
+| `deepseek_r1` | ✅ | DeepSeek R1 (force reasoning mode) |
+| `kimi` | ✅ | Kimi Thinking model |
+| `step3` | ✅ | Step3, Step3.5 models |
+| `nano_v3` | ✅ | NanoV3 model |
+
+**See Also:** [Reasoning Parser Documentation](../08-features/reasoning-parser.md)
+
 ## Training Service Configuration (Self-Hosted)
 
 ### Single Service (Standard Training)

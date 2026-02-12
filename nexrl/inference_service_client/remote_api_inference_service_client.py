@@ -16,6 +16,7 @@
 Remote API Inference Service Client - Base class for remote API backends (Tinker/Weaver)
 """
 
+import json
 import logging
 import time
 import uuid
@@ -25,6 +26,8 @@ from typing import Any
 from omegaconf import DictConfig
 
 from ..executor import execute
+from ..utils.reasoning_parser import create_reasoning_parser
+from ..utils.tool_parser import create_tool_parser
 from .base_inference_service_client import InferenceServiceClient
 
 logger = logging.getLogger(__name__)
@@ -70,6 +73,20 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         else:
             self._identifier = identifier or "default"
         self._freeze_for_weight_sync = config.inference_service.get("freeze_for_weight_sync", True)
+
+        # Initialize tool parser based on config
+        parser_type = config.inference_service.get("tool_parser", "qwen25")
+        try:
+            self._tool_parser = create_tool_parser(parser_type)
+            logger.info(f"Initialized tool parser: {parser_type}")
+        except ValueError as e:
+            logger.warning(f"Failed to create tool parser: {e}. Using qwen25 as fallback.")
+            self._tool_parser = create_tool_parser("qwen25")
+
+        # Initialize reasoning parser based on config
+        reasoning_parser_type = config.inference_service.get("reasoning_parser", "think_tag")
+        self._reasoning_parser = create_reasoning_parser(reasoning_parser_type)
+        logger.info(f"Initialized reasoning parser: {reasoning_parser_type}")
 
     @abstractmethod
     def set_service_holder(self, service_holder) -> None:
@@ -221,7 +238,64 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         prompt_tokens: list[int] = result["prompt_tokens"]
         response_tokens: list[int] = result["response_tokens"]
         response_logprobs: list[float] = result["response_logprobs"]
-        tool_calls = result.get("tool_calls")
+        tool_string: str | None = result.get("tool_string")
+        reasoning_string: str | None = result.get("reasoning_string")
+
+        # Response content is already cleaned by service holder
+        response_content = result["response"]
+        reasoning_content = None
+
+        # Parse reasoning to extract structured content (if present)
+        if reasoning_string:
+            reasoning_result = self._reasoning_parser.parse(reasoning_string)
+            if reasoning_result.is_valid:
+                reasoning_content = reasoning_result.reasoning_content
+                logger.debug(
+                    f"Extracted reasoning: {reasoning_content[:100] if reasoning_content else 'None'}..."
+                )
+            elif not reasoning_result.is_valid:
+                logger.warning("Failed to parse reasoning content")
+
+        # Parse tool calls to structured format (if present)
+        tool_calls = None
+        if tool_string:
+            parse_result = self._tool_parser.parse(tool_string)
+            if parse_result.is_valid and parse_result.tool_calls:
+                # Convert to OpenAI format and ensure arguments is JSON string
+                tool_calls = []
+                for tc in parse_result.tool_calls:
+                    # Ensure function.arguments is a JSON string, not a dict
+                    function = dict(tc.function)
+                    if "arguments" in function and isinstance(function["arguments"], dict):
+                        function["arguments"] = json.dumps(function["arguments"])
+                    elif "arguments" not in function:
+                        function["arguments"] = "{}"
+
+                    tool_calls.append(
+                        {
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": function,
+                        }
+                    )
+
+                logger.debug(f"Parsed tool calls: {json.dumps(tool_calls, indent=2)}")
+            elif not parse_result.is_valid:
+                logger.warning(f"Failed to parse tool call from: {tool_string[:100]}...")
+
+        # Build message with cleaned content
+        message = {
+            "role": "assistant",
+            "content": response_content,
+        }
+
+        # Add reasoning_content if present
+        if reasoning_content:
+            message["reasoning_content"] = reasoning_content
+
+        # Add tool_calls if present
+        if tool_calls:
+            message["tool_calls"] = tool_calls
 
         openai_like = {
             "id": self._make_id("chatcmpl"),
@@ -231,11 +305,7 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
             "choices": [
                 {
                     "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": result["response"],
-                        "tool_calls": tool_calls,
-                    },
+                    "message": message,
                     "finish_reason": result["finish_reason"],
                     "logprobs": None,
                 }
