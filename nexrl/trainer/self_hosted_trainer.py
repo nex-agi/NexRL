@@ -354,11 +354,14 @@ class SelfHostedTrainer(BaseTrainer):
         """
         Process trajectories to add padding and tensor fields for NexTrainer.
 
-        Converts tokens and loss_mask into padded tensors
-        (input_ids, attention_mask, position_ids, loss_mask, prompts, responses).
+        Uses **Unified Sequence Padding**: the prompt/response split point is fixed
+        at position 1 (first token = prompt, rest = response).  The batch is padded
+        to ``total_width = min(max_total_len, max_prompt_length + max_response_length)``
+        so that the padded tensor width reflects actual data lengths rather than the
+        independent max of prompt and response lengths across the batch.
 
-        The loss_mask is used to determine which tokens are prompt vs response.
-        We find the first contiguous zeros (before the first 1) as the prompt.
+        The real prompt vs. response distinction is carried by ``loss_mask``
+        (0 = prompt/tool-output, 1 = model response to train on).
 
         Args:
             trajectories: List of Trajectory dataclasses with tokens and loss_mask
@@ -368,30 +371,30 @@ class SelfHostedTrainer(BaseTrainer):
         """
         pad_token_id = self.tokenizer.pad_token_id
 
-        # Calculate the maximum response length among all trajectories
-        # This is needed because responses with tool-call can be longer than the configured max response length
-        # Tool-call result length cannot be restricted
-        max_response_len = 0
-        max_prompt_len = 0
+        # --- Compute unified total_width ---
+        max_total_len = 0
         for traj in trajectories:
-            loss_mask_values = traj.loss_mask
-            # Convert to list if it's a tensor (e.g., when loaded from .pt files)
-            if isinstance(loss_mask_values, torch.Tensor):
-                loss_mask_values = loss_mask_values.tolist()
-            try:
-                first_one_idx = loss_mask_values.index(1)
-            except ValueError:
-                # No 1s found, entire sequence is prompt, no response
-                first_one_idx = len(loss_mask_values)
+            max_total_len = max(max_total_len, len(traj.tokens))
 
-            prompt_length = first_one_idx
-            response_length = len(traj.tokens) - first_one_idx
-            max_prompt_len = max(max_prompt_len, prompt_length)
-            max_response_len = max(max_response_len, response_length)
+        configured_max = self._max_prompt_length + self._max_response_length
+        total_width = min(max_total_len, configured_max)
 
-        # Use the larger of the actual max lengths or the configured maxes
-        max_prompt_length = max(max_prompt_len, self._max_prompt_length)
-        max_response_length = max(max_response_len, self._max_response_length)
+        # Ensure total_width >= 2 so that prompt (1 token) + response (>=1 token) is valid
+        total_width = max(total_width, 2)
+
+        response_width = total_width - 1  # prompt is always 1 token
+
+        if max_total_len > configured_max:
+            logger.warning(
+                f"Truncating trajectories: max_total_len={max_total_len} exceeds "
+                f"configured max ({self._max_prompt_length}+{self._max_response_length}"
+                f"={configured_max}). Capping to {total_width}."
+            )
+
+        logger.info(
+            f"Unified padding: max_total_len={max_total_len}, "
+            f"configured_max={configured_max}, total_width={total_width}"
+        )
 
         for traj in trajectories:
             tokens = traj.tokens
@@ -402,55 +405,37 @@ class SelfHostedTrainer(BaseTrainer):
             if isinstance(loss_mask_values, torch.Tensor):
                 loss_mask_values = loss_mask_values.tolist()
 
-            # Extract prompt_tokens and response_tokens based on loss_mask
-            # The loss mask can be like 0011000111 - we want the first zeros until a 1
-            # Find the index of the first 1 in the loss mask
-            try:
-                first_one_idx = loss_mask_values.index(1)
-            except ValueError:
-                # No 1s found, entire sequence is prompt
-                first_one_idx = len(loss_mask_values)
+            # Split: first token = prompt, rest = response (up to total_width)
+            prompt_tokens = tokens[:1]
+            response_tokens = tokens[1:total_width]
+            response_loss_mask_values = loss_mask_values[1:total_width]
 
-            prompt_tokens = tokens[:first_one_idx]
-            response_tokens = tokens[first_one_idx:]
-            response_loss_mask_values = loss_mask_values[first_one_idx:]
+            if len(tokens) > total_width:
+                logger.debug(f"Trajectory truncated from {len(tokens)} to {total_width} tokens")
 
-            # Pad prompt tokens and masks (left padding)
-            prompt_input_ids = padding_data(
-                prompt_tokens,
-                max_length=max_prompt_length,
-                pad_token_id=pad_token_id,
-                left_pad=True,
-                truncation="error",
-            )
-            prompt_attention_mask = padding_data(
-                torch.ones((1, len(prompt_tokens)), dtype=torch.int),
-                max_length=max_prompt_length,
-                pad_token_id=0,
-                left_pad=True,
-                truncation="error",
-            )
-            prompt_loss_mask = torch.zeros_like(prompt_input_ids, dtype=torch.int)
+            # Prompt: exactly 1 token, no padding needed
+            prompt_input_ids = torch.tensor([prompt_tokens], dtype=torch.long)
+            prompt_attention_mask = torch.ones((1, 1), dtype=torch.int)
+            prompt_loss_mask = torch.zeros((1, 1), dtype=torch.int)
 
-            # Pad response tokens and masks (right padding)
+            # Response: right-pad to response_width
             response_input_ids = padding_data(
                 response_tokens,
-                max_length=max_response_length,
+                max_length=response_width,
                 pad_token_id=pad_token_id,
                 left_pad=False,
                 truncation="error",
             )
             response_attention_mask = padding_data(
                 torch.ones((1, len(response_tokens)), dtype=torch.int),
-                max_length=max_response_length,
+                max_length=response_width,
                 pad_token_id=0,
                 left_pad=False,
                 truncation="error",
             )
-            # Use the actual loss_mask values from the trajectory for response
             response_loss_mask = padding_data(
                 torch.tensor([response_loss_mask_values], dtype=torch.int),
-                max_length=max_response_length,
+                max_length=response_width,
                 pad_token_id=0,
                 left_pad=False,
                 truncation="error",

@@ -297,7 +297,12 @@ def compute_policy_loss_impl(
     responses = data["responses"]
     attention_mask = data["attention_mask"]
     response_length = responses.size(1)
-    response_mask = attention_mask[:, -response_length:]
+    # Use scoring_attention_mask (= attention_mask * loss_mask) when available
+    # to correctly exclude non-trainable tokens (e.g. tool outputs) from the loss.
+    if "scoring_attention_mask" in data:
+        response_mask = data["scoring_attention_mask"][:, -response_length:]
+    else:
+        response_mask = attention_mask[:, -response_length:]
 
     old_log_prob = data["old_log_probs"] if do_old_log_prob_compute else log_prob.clone().detach()
 

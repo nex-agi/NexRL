@@ -406,8 +406,11 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         response_length = responses.size(-1)
         token_level_scores = batch.values["token_level_scores"]
         batch_size = responses.shape[0]
-        attention_mask = batch.values["attention_mask"]
-        response_mask = attention_mask[:, -response_length:]
+        # Use scoring_attention_mask to correctly exclude non-trainable tokens
+        if "scoring_attention_mask" in batch.values:
+            response_mask = batch.values["scoring_attention_mask"][:, -response_length:]
+        else:
+            response_mask = batch.values["attention_mask"][:, -response_length:]
 
         # Compute KL between ref_policy and current policy
         if "ref_log_prob" in batch.values:
@@ -452,8 +455,11 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         beta = 0
         responses = batch.values["responses"]
         response_length = responses.size(-1)
-        attention_mask = batch.values["attention_mask"]
-        response_mask = attention_mask[:, -response_length:]
+        # Use scoring_attention_mask to correctly exclude non-trainable tokens
+        if "scoring_attention_mask" in batch.values:
+            response_mask = batch.values["scoring_attention_mask"][:, -response_length:]
+        else:
+            response_mask = batch.values["attention_mask"][:, -response_length:]
 
         kld = torch.zeros_like(response_mask, dtype=torch.float32)
         current_kl = core_algos.masked_mean(kld, mask=response_mask, axis=-1)
@@ -567,19 +573,32 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         """
         Compute response length and mask information.
 
+        Uses loss_mask and attention_mask to compute *actual* prompt/response
+        lengths rather than relying on the tensor split position (which is
+        always 1 under Unified Sequence Padding).
+
         Args:
-            batch: Batch containing attention masks
+            batch: Batch containing attention masks and loss_mask
 
         Returns:
             Dictionary with response_mask, prompt_length, and response_length
         """
-        response_length = batch.values["responses"].shape[-1]
+        attention_mask = batch.values["attention_mask"]
+        loss_mask = batch.values.get("loss_mask", attention_mask)
 
-        prompt_mask = batch.values["attention_mask"][:, :-response_length]
-        response_mask = batch.values["attention_mask"][:, -response_length:]
+        # actual_tokens: total non-padding tokens per sample
+        actual_tokens = attention_mask.sum(-1).float()
+        # response_length: tokens with loss_mask=1 (model responses to train on)
+        response_length = (attention_mask * loss_mask).sum(-1).float()  # (batch_size,)
+        # prompt_length: context tokens (system, user, tool outputs, etc.)
+        prompt_length = actual_tokens - response_length
 
-        prompt_length = prompt_mask.sum(-1).float()
-        response_length = response_mask.sum(-1).float()  # (batch_size,)
+        # response_mask for compatibility: use scoring_attention_mask if available
+        max_response_length = batch.values["responses"].shape[-1]
+        if "scoring_attention_mask" in batch.values:
+            response_mask = batch.values["scoring_attention_mask"][:, -max_response_length:]
+        else:
+            response_mask = attention_mask[:, -max_response_length:]
 
         return {
             "response_mask": response_mask,
@@ -606,14 +625,23 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
 
         max_response_length = batch.values["responses"].shape[-1]
 
-        prompt_mask = batch.values["attention_mask"][:, :-max_response_length].bool()
-        response_mask = batch.values["attention_mask"][:, -max_response_length:].bool()
+        # Use scoring_attention_mask (= attention_mask * loss_mask) for selecting
+        # only trainable response tokens when computing advantage/return statistics.
+        if "scoring_attention_mask" in batch.values:
+            response_mask = batch.values["scoring_attention_mask"][:, -max_response_length:].bool()
+        else:
+            response_mask = batch.values["attention_mask"][:, -max_response_length:].bool()
 
-        max_prompt_length = prompt_mask.size(-1)
-
+        # Compute actual prompt/response lengths based on loss_mask
         response_info = self._compute_response_info(batch)
         prompt_length = response_info["prompt_length"]
         response_length = response_info["response_length"]
+
+        # Detect sequence truncation: if actual (non-padding) tokens fill the
+        # entire padded width, the trajectory was likely truncated.
+        attention_mask = batch.values["attention_mask"]
+        total_seq_width = attention_mask.shape[-1]
+        actual_tokens = attention_mask.sum(-1).float()
 
         valid_adv = torch.masked_select(advantages, response_mask)
         valid_returns = torch.masked_select(returns, response_mask)
@@ -660,22 +688,22 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
                 if use_critic
                 else {}
             ),
-            # response length
+            # response length (actual trainable tokens, from loss_mask)
             "response_length/mean": torch.mean(response_length).detach().item(),
             "response_length/max": torch.max(response_length).detach().item(),
             "response_length/min": torch.min(response_length).detach().item(),
+            # clip_ratio: fraction of samples where the sequence fills the
+            # entire padded width, indicating the trajectory was truncated.
             "response_length/clip_ratio": torch.mean(
-                torch.eq(response_length, max_response_length).float()
+                torch.ge(actual_tokens, total_seq_width).float()
             )
             .detach()
             .item(),
-            # prompt length
+            # prompt length (actual context tokens, from loss_mask)
             "prompt_length/mean": torch.mean(prompt_length).detach().item(),
             "prompt_length/max": torch.max(prompt_length).detach().item(),
             "prompt_length/min": torch.min(prompt_length).detach().item(),
-            "prompt_length/clip_ratio": torch.mean(
-                torch.eq(prompt_length, max_prompt_length).float()
-            )
+            "prompt_length/clip_ratio": torch.mean(torch.ge(actual_tokens, total_seq_width).float())
             .detach()
             .item(),
         }
