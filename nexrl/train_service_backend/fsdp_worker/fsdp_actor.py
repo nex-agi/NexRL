@@ -405,6 +405,10 @@ class DataParallelPPOActor:
             "teacher_log_probs",
         ]
 
+        # Include scoring_attention_mask for correct response masking
+        if "scoring_attention_mask" in data.batch:
+            select_keys.append("scoring_attention_mask")
+
         # If using clipping, we need old_student_log_probs
         if use_clipping and do_old_student_log_prob_compute:
             select_keys.append("old_student_log_probs")
@@ -441,7 +445,13 @@ class DataParallelPPOActor:
                     micro_batch_data = micro_batch_data.cuda()
                     responses = micro_batch_data["responses"]
                     response_length = responses.size(1)
-                    response_mask = micro_batch_data["attention_mask"][:, -response_length:]
+                    # Use scoring_attention_mask to correctly exclude non-trainable tokens
+                    if "scoring_attention_mask" in micro_batch_data:
+                        response_mask = micro_batch_data["scoring_attention_mask"][
+                            :, -response_length:
+                        ]
+                    else:
+                        response_mask = micro_batch_data["attention_mask"][:, -response_length:]
                     teacher_log_probs = micro_batch_data[
                         "teacher_log_probs"
                     ]  # [batch, response_length]

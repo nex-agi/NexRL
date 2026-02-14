@@ -531,13 +531,12 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
                             teacher_log_probs[mask.bool()].max().item()
                         )
 
-        # Prompt and response length breakdown
-        max_response_length = batch.values["responses"].shape[-1]
-        prompt_mask = batch.values["attention_mask"][:, :-max_response_length]
-        response_mask = batch.values["attention_mask"][:, -max_response_length:]
-
-        prompt_length = prompt_mask.sum(-1).float()
-        response_length_values = response_mask.sum(-1).float()
+        # Prompt and response length breakdown based on loss_mask
+        attention_mask = batch.values["attention_mask"]
+        loss_mask = batch.values.get("loss_mask", attention_mask)
+        actual_tokens = attention_mask.sum(-1).float()
+        response_length_values = (attention_mask * loss_mask).sum(-1).float()
+        prompt_length = actual_tokens - response_length_values
 
         metrics["distill/prompt_length_mean"] = prompt_length.mean().item()
         metrics["distill/prompt_length_max"] = prompt_length.max().item()
@@ -553,19 +552,27 @@ class SelfHostedOpdTrainer(SelfHostedTrainer):
         """
         Compute response length and mask information.
 
+        Uses loss_mask and attention_mask to compute *actual* prompt/response
+        lengths rather than relying on the tensor split position.
+
         Args:
-            batch: Batch containing attention masks
+            batch: Batch containing attention masks and loss_mask
 
         Returns:
             Dictionary with response_mask, prompt_length, and response_length
         """
-        response_length = batch.values["responses"].shape[-1]
+        attention_mask = batch.values["attention_mask"]
+        loss_mask = batch.values.get("loss_mask", attention_mask)
 
-        prompt_mask = batch.values["attention_mask"][:, :-response_length]
-        response_mask = batch.values["attention_mask"][:, -response_length:]
+        actual_tokens = attention_mask.sum(-1).float()
+        response_length = (attention_mask * loss_mask).sum(-1).float()
+        prompt_length = actual_tokens - response_length
 
-        prompt_length = prompt_mask.sum(-1).float()
-        response_length = response_mask.sum(-1).float()
+        max_response_length = batch.values["responses"].shape[-1]
+        if "scoring_attention_mask" in batch.values:
+            response_mask = batch.values["scoring_attention_mask"][:, -max_response_length:]
+        else:
+            response_mask = attention_mask[:, -max_response_length:]
 
         return {
             "response_mask": response_mask,

@@ -163,7 +163,12 @@ def compute_grpo_outcome_advantage(
                     ]
                     per_run_means_tensor = torch.stack(per_run_means)
                     id2mean[idx] = per_run_means_tensor.mean()
-                    id2std[idx] = torch.std(per_run_means_tensor)
+                    # Guard against single-element tensor: torch.std uses Bessel
+                    # correction (N-1), which returns nan for N=1.
+                    if len(per_run_means) <= 1:
+                        id2std[idx] = torch.tensor(1.0, device=scores.device)
+                    else:
+                        id2std[idx] = torch.std(per_run_means_tensor)
                 else:
                     id2mean[idx] = torch.mean(score_tensor)
                     id2std[idx] = torch.std(score_tensor)
