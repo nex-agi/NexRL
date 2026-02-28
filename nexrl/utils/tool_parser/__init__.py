@@ -19,6 +19,8 @@ This module wraps SGLang's function call parser to provide NexRL's interface.
 Falls back to a minimal implementation if sglang is not installed.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import uuid
