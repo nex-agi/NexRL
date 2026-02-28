@@ -40,7 +40,7 @@ spec:
           containers:
             - name: driver
               image: {{image}}
-              imagePullPolicy: Always
+              imagePullPolicy: IfNotPresent
               command:
                 - /bin/bash
                 - -c
@@ -140,7 +140,7 @@ spec:
           containers:
             - name: agent
               image: {{image}}
-              imagePullPolicy: Always
+              imagePullPolicy: IfNotPresent
               command:
                 - /bin/bash
                 - -c

@@ -39,7 +39,7 @@ spec:
           containers:
             - name: worker
               image: {{image}}
-              imagePullPolicy: Always
+              imagePullPolicy: IfNotPresent
               command:
                 - /bin/bash
                 - -c

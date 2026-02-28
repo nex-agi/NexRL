@@ -52,6 +52,8 @@ LABEL version="1.0.0"
 # Pass build arguments to runtime environment variables
 ARG NGC_IMAGE_TAG
 ARG MAX_JOBS=16
+ARG NEXRL_EXTRAS=docker
+ARG SGLANG_VERSION=0.5.8
 ENV NGC_IMAGE_TAG=${NGC_IMAGE_TAG}
 ENV MAX_JOBS=${MAX_JOBS}
 
@@ -71,12 +73,16 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # Copy wheel package from builder stage
 COPY --from=builder /build/dist/*.whl /tmp/
 
-# Install NexRL wheel package with all optional dependencies
-# Uses [all] to install all optional-dependencies (dev, advanced-tracking)
-# This includes nex-weaver, tinker, and tinker-cookbook from GitHub
+# Install NexRL wheel package with configurable optional dependencies
+# Default extra is [docker], which excludes sglang to avoid openai resolver conflicts.
+# Override with --build-arg NEXRL_EXTRAS=all when sglang support is required.
 RUN WHEEL_FILE=$(ls /tmp/*.whl) && \
-    pip install --no-cache-dir "${WHEEL_FILE}[all]" && \
+    pip install --no-cache-dir "${WHEEL_FILE}[${NEXRL_EXTRAS}]" && \
     rm -rf /tmp/*.whl
+
+# Install sglang without dependencies to bypass openai version pin conflicts.
+RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}"
+
 
 RUN pip uninstall -y flash-attn && \
 pip install --no-cache-dir flash-attn --no-build-isolation
