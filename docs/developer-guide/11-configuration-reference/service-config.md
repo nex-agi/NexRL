@@ -236,7 +236,8 @@ Tool call parser type for extracting structured tool calls from model responses.
 - `qwen3_coder` - Qwen 3 Coder format
 - `gpt_oss` - GPT-OSS format
 - `deepseekv31` - DeepSeek V3.1 format
-- `simple_xml` - Simple XML format
+- `qwen25` - Qwen 2.5/3.0 format (default)
+- See [Tool Parser](../08-features/tool-parser.md#all-config-options) for all available parsers
 
 **Example:**
 ```yaml

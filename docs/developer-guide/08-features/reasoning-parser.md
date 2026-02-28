@@ -2,6 +2,16 @@
 
 The Reasoning Parser extracts thinking/reasoning content from model responses and separates it into a dedicated field, matching OpenAI's o1 model format.
 
+## Dependencies
+
+The reasoning parser now uses [SGLang's](https://github.com/sgl-project/sglang) reasoning parser implementation under the hood. To use the full functionality, install with:
+
+```bash
+pip install 'NexRL[sglang]'
+```
+
+If SGLang is not installed, NexRL will fall back to a minimal parser that only handles basic `<think>...</think>` tags.
+
 ## Overview
 
 When models use chain-of-thought reasoning, they output thinking process wrapped in special tags. The reasoning parser:
@@ -41,13 +51,22 @@ inference_service:
 
 | Detector | Format | Use For | Streaming |
 |----------|--------|---------|-----------|
-| `think_tag` | `<think>...</think>` | Default/Generic (legacy) | ❌ |
-| `qwen3` | `<think>...</think>` | Qwen3, DeepSeek-V3, GLM-4.5, MiniMax | ✅ |
+| `think_tag` | `<think>...</think>` | Default/Generic | ✅ |
+| `qwen3` | `<think>...</think>` | Qwen3, MiniMax | ✅ |
 | `deepseek_r1` | `(<think>)?...</think>` | DeepSeek R1 (force reasoning) | ✅ |
+| `deepseek_v3` | `<think>...</think>` | DeepSeek V3 | ✅ |
 | `kimi` | `◁think▷...◁/think▷` | Kimi Thinking model | ✅ |
-| `step3` | `<think>...</think>` | Step3, Step3.5 models | ✅ |
+| `kimi_k2` | `<think>...</think>` | Kimi K2 | ✅ |
+| `step3` | `<think>...</think>` | Step3 models | ✅ |
+| `step3p5` | `<think>...</think>` | Step3.5 models | ✅ |
 | `nano_v3` | `<think>...</think>` | NanoV3 model | ✅ |
+| `minimax` | `<think>...</think>` | MiniMax | ✅ |
 | `minimax_append_think` | Special | MiniMax (prepends tag) | ✅ |
+| `glm45` | `<think>...</think>` | GLM-4.5 | ✅ |
+| `gpt-oss` | Harmony format | GPT-OSS/T4 models | ✅ |
+| `interns1` | `<think>...</think>` | InternLM S1 | ✅ |
+
+**Note:** All detector types (except legacy `think_tag`) are powered by SGLang and support streaming.
 
 **Examples:**
 ```yaml

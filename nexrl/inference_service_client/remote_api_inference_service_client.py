@@ -259,7 +259,7 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         # Parse tool calls to structured format (if present)
         tool_calls = None
         if tool_string:
-            parse_result = self._tool_parser.parse(tool_string)
+            parse_result = self._tool_parser.parse(tool_string, tools=tools)
             if parse_result.is_valid and parse_result.tool_calls:
                 # Convert to OpenAI format and ensure arguments is JSON string
                 tool_calls = []

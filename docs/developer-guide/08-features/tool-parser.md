@@ -2,45 +2,51 @@
 
 The Tool Parser Framework provides a flexible, extensible system for parsing tool calls from different model formats. Different language models use different formats for tool calls, and this framework allows you to easily switch between parsers or add new ones via configuration.
 
+## Dependencies
+
+The tool parser now uses [SGLang's](https://github.com/sgl-project/sglang) function call parser implementation under the hood. To use the full functionality, install with:
+
+```bash
+pip install 'NexRL[sglang]'
+```
+
+If SGLang is not installed, NexRL will fall back to a minimal parser that only handles basic `<tool_call>JSON</tool_call>` format.
+
 ## Overview
 
 Previously, tool parsing logic was hardcoded in the service holders (Weaver and Tinker). The tool parser framework refactors this into a centralized, configurable system that separates concerns:
 
 - **Service Holders** detect and extract raw tool strings
-- **Tool Parsers** parse tool strings into structured format
+- **Tool Parsers** parse tool strings into structured format (via SGLang detectors)
 - **Inference Service Client** coordinates parsing and returns OpenAI-format results
 
 ## Architecture
 
-The framework consists of four main components:
+The framework consists of three main components:
 
-### 1. BaseToolParser
+### 1. SGLang Format Detectors
 
-Abstract base class defining the parser interface. All parsers must implement three methods:
+NexRL uses SGLang's `BaseFormatDetector` implementations for parsing. SGLang provides detectors for:
+- `Qwen25Detector` - Qwen 2.5/3.0 multi-line JSON format
+- `Qwen3CoderDetector` - Qwen 3 Coder XML-style parameters
+- `DeepSeekV3Detector` - DeepSeek V3 format
+- `DeepSeekV31Detector` - DeepSeek V3.1 special Unicode tokens
+- `DeepSeekV32Detector` - DeepSeek V3.2 format
+- `GptOssDetector` - GPT OSS/Harmony commentary format
+- `Llama32Detector` - Llama 3.x format
+- `MistralDetector` - Mistral format
+- `PythonicDetector` - Pythonic tool call format
+- `KimiK2Detector` - Kimi K2 format
+- `Step3Detector` - Step3 format
+- `GlmDetector` - GLM format
+- And many more...
 
-```python
-class BaseToolParser(ABC):
-    @abstractmethod
-    def detect_tool_call(self, text: str) -> bool:
-        """Check if text contains tool calls in this parser's format"""
+### 2. SglangToolParserAdapter
 
-    @abstractmethod
-    def extract_tool_string(self, text: str) -> str | None:
-        """Extract the raw tool call string from response text"""
-
-    @abstractmethod
-    def parse_tool_string(self, tool_string: str) -> ParseResult:
-        """Parse the extracted tool string into structured tool calls"""
-```
-
-### 2. Concrete Parsers
-
-Implementations for specific model formats:
-- `SimpleXmlParser` - Simple XML tag format
-- `Qwen25Parser` - Qwen 2.5/3.0 multi-line JSON format
-- `Qwen3CoderParser` - Qwen 3 Coder XML-style parameters
-- `DeepseekV31Parser` - DeepSeek V3.1 special Unicode tokens
-- `GptOssParser` - GPT OSS/Harmony commentary format
+NexRL's adapter wraps SGLang detectors to provide a unified interface:
+- Converts NexRL tool dicts to SGLang `Tool` objects
+- Converts SGLang `ToolCallItem` to NexRL `ToolCallItem` format
+- Handles tool name validation when tools are provided
 
 ### 3. Factory Function
 
@@ -54,7 +60,7 @@ parser = create_tool_parser("qwen25")
 
 ### 4. Core Types
 
-Data classes for structured results:
+Data classes for structured results (maintained for backward compatibility):
 
 ```python
 @dataclass
@@ -69,19 +75,11 @@ class ParseResult:
     is_valid: bool
 ```
 
+**Note:** Internally, SGLang uses a different format (`tool_index`, `name`, `parameters`), but NexRL's adapter transparently converts to the OpenAI-compatible format above.
+
 ## Supported Formats
 
-### Simple XML (`simple_xml`)
-
-Single-line JSON within XML tags:
-
-```xml
-<tool_call>{"name": "get_weather", "arguments": {"city": "NYC"}}</tool_call>
-```
-
-**Config:** `simple_xml` or `xml`
-
-**Use case:** Default format, simple tool calls with inline JSON
+All formats are provided by SGLang's detectors. See the [Config Options](#all-config-options) table below for the complete list.
 
 ### Qwen 2.5/3.0 (`qwen25`)
 
@@ -187,13 +185,33 @@ If not specified, `qwen25` is used as the default.
 
 ### All Config Options
 
-| Parser | Config Values | Format |
-|--------|---------------|--------|
-| Simple XML | `simple_xml`, `xml` | `<tool_call>{json}</tool_call>` |
-| Qwen 2.5/3.0 | `qwen25`, `qwen`, `qwen3` | Multi-line JSON with tags |
-| Qwen 3 Coder | `qwen3_coder` | XML-style parameters |
-| DeepSeek V3.1 | `deepseekv31`, `deepseek_v31`, `deepseek` | Unicode tokens |
-| GPT OSS | `gpt_oss` | Harmony commentary |
+**Important:** Use SGLang's parser names directly in your config. No mapping or aliases.
+
+| Parser | Config Value | Format | Notes |
+|--------|-------------|--------|-------|
+| Qwen 2.5/3.0 | `qwen25` or `qwen` | Multi-line JSON with tags | Default |
+| Qwen 3 Coder | `qwen3_coder` | XML-style parameters | |
+| DeepSeek V3 | `deepseekv3` | DeepSeek V3 format | |
+| DeepSeek V3.1 | `deepseekv31` | Unicode tokens | |
+| DeepSeek V3.2 | `deepseekv32` | DeepSeek V3.2 format | |
+| GPT OSS | `gpt-oss` | Harmony commentary | |
+| Llama 3.x | `llama3` | Llama tool format | |
+| Mistral | `mistral` | Mistral format | |
+| Pythonic | `pythonic` | Python function calls | |
+| Kimi K2 | `kimi_k2` | Kimi K2 format | |
+| Step3 | `step3` | Step3 format | |
+| Step3.5 | `step3p5` | Step3.5 format | |
+| GLM | `glm` or `glm45` | GLM format | |
+| GLM 4.7 | `glm47` | GLM 4.7 format | |
+| Hermes | `hermes` | Hermes format | |
+| InternLM | `interns1` | InternLM S1 format | |
+| MiniMax M2 | `minimax-m2` | MiniMax M2 format | |
+| Trinity | `trinity` | Trinity format | |
+| GigaChat3 | `gigachat3` | GigaChat3 format | |
+| MiMo | `mimo` | MiMo format | |
+| LFM2 | `lfm2` | LFM2 format | |
+
+**Note:** All parsers are powered by SGLang's detectors. Parser names must match SGLang's `FunctionCallParser.ToolCallParserEnum` exactly.
 
 ## Usage
 
@@ -203,11 +221,23 @@ If not specified, `qwen25` is used as the default.
 from nexrl.utils.tool_parser import create_tool_parser
 
 # Create a parser
-parser = create_tool_parser("simple_xml")
+parser = create_tool_parser("qwen25")
+
+# Define available tools (optional, for validation)
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a city",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+        }
+    }
+]
 
 # Parse response text
 response = '<tool_call>{"name": "get_weather", "arguments": {"city": "NYC"}}</tool_call>'
-result = parser.parse(response)
+result = parser.parse(response, tools=tools)
 
 if result.is_valid and result.tool_calls:
     for tool_call in result.tool_calls:
@@ -215,6 +245,8 @@ if result.is_valid and result.tool_calls:
         print(f"Arguments: {tool_call.function['arguments']}")
         print(f"ID: {tool_call.id}")
 ```
+
+**Note:** Passing `tools` is optional but recommended for validation. SGLang will validate tool names against the provided tools list.
 
 ### Integration with NexRL
 
@@ -361,7 +393,7 @@ return {
 
 ```python
 # Initialize parser based on config
-tool_parser_type = config.inference_service.get("tool_parser", "simple_xml")
+tool_parser_type = config.inference_service.get("tool_parser", "qwen25")
 self._tool_parser = create_tool_parser(tool_parser_type)
 
 # Use parser during generation
@@ -402,7 +434,7 @@ if tool_string:
 
 The implementation maintains full backward compatibility:
 
-- **Default behavior:** Uses `simple_xml` parser (same format as original)
+- **Default behavior:** Uses `qwen25` parser (multi-line JSON format)
 - **Service holder API:** Compatible (returns `tool_string` field)
 - **Client API:** Returns tool calls in OpenAI format (unchanged)
 - **Configuration:** No changes required (will use default)
@@ -411,14 +443,10 @@ The implementation maintains full backward compatibility:
 
 ```
 nexrl/utils/tool_parser/
-├── __init__.py                    # Factory function and exports
-├── core_types.py                  # ToolCallItem, ParseResult
-├── base_tool_parser.py           # BaseToolParser abstract class
-├── simple_xml_parser.py          # SimpleXmlParser
-├── qwen25_parser.py              # Qwen25Parser
-├── qwen3_coder_parser.py         # Qwen3CoderParser
-├── deepseekv31_parser.py         # DeepseekV31Parser
-└── gpt_oss_parser.py             # GptOssParser
+├── __init__.py                    # Factory function, SglangToolParserAdapter
+└── core_types.py                  # ToolCallItem, ParseResult
+
+Note: Parser implementations are now provided by SGLang.
 ```
 
 ## Reference

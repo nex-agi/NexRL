@@ -24,8 +24,8 @@ data:
   storage_type: "hostPath"
 
   # Docker images - change to your registry
-  worker_image: "docker.io/nexagi/nexrl:latest"
-  controller_image: "docker.io/nexagi/nexrl:latest"
+  worker_image: "docker.io/nexagi/nexrl:v1.3.0"
+  controller_image: "docker.io/nexagi/nexrl:v1.3.0"
   inference_image: "lmsysorg/sglang:latest"
 
   # Kubernetes resources

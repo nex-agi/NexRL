@@ -43,7 +43,7 @@ spec:
           containers:
             - name: api-server
               image: {{image}}
-              imagePullPolicy: Always
+              imagePullPolicy: IfNotPresent
               command:
                 - /bin/bash
                 - -c
