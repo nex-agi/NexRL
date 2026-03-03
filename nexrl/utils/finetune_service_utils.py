@@ -27,6 +27,7 @@ def convert_trajectories_to_datums(trajectories: list[Trajectory]) -> list[dict]
         logprobs = traj["logprobs"]
         loss_mask = traj["loss_mask"]
         advantage = traj["advantage"]
+        sampling_mask = traj["sampling_mask"]
         # if advantage == 0.0:
         #     continue
 
@@ -42,6 +43,7 @@ def convert_trajectories_to_datums(trajectories: list[Trajectory]) -> list[dict]
             # Token-level mask aligned with target_tokens (0 for prompt / ignored tokens, 1 for response tokens).
             # This is used by the trainer to compute loss/entropy over response tokens only.
             "loss_mask": [int(m) for m in adjusted_loss_mask],
+            "sampling_mask": sampling_mask,
         }
 
         datum_data = {

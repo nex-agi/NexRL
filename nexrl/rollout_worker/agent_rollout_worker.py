@@ -161,6 +161,7 @@ class AgentRolloutWorker(BaseRolloutWorker):
                     "model_tag": identifier,  # identifier serves as model_tag for trajectory routing
                     # Logprobs field (0.0 for prompt, actual logprobs for response)
                     "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
+                    "sampling_mask": agent_result.get("sampling_mask", None),
                 },
             )
 
