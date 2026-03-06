@@ -75,6 +75,9 @@ class WeaverServiceHolder:
         self._training_client = self._service_client.create_model(
             base_model=base_model, training_mode=training_mode, lora_config={"rank": lora_rank}
         )
+        logger.info(
+            f"Training client model id: {getattr(self._training_client, "model_id", None),}"
+        )
 
         if tokenizer_path is None:
             # Initialize tokenizer from training client helper

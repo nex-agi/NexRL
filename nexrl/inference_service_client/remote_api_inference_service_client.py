@@ -78,7 +78,6 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         parser_type = config.inference_service.get("tool_parser", "qwen25")
         try:
             self._tool_parser = create_tool_parser(parser_type)
-            logger.info(f"Initialized tool parser: {parser_type}")
         except ValueError as e:
             logger.warning(f"Failed to create tool parser: {e}. Using qwen25 as fallback.")
             self._tool_parser = create_tool_parser("qwen25")
@@ -86,7 +85,6 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         # Initialize reasoning parser based on config
         reasoning_parser_type = config.inference_service.get("reasoning_parser", "think_tag")
         self._reasoning_parser = create_reasoning_parser(reasoning_parser_type)
-        logger.info(f"Initialized reasoning parser: {reasoning_parser_type}")
 
     @abstractmethod
     def set_service_holder(self, service_holder) -> None:
