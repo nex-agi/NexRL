@@ -484,14 +484,19 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         )
 
         # Run agent
-        response = agent.run(message=query, custom_llm_client_provider=client_provider_func)
-
-        # Extract traces
+        # Run agent
+        response = ""
         traces = []
-        for tracer in agent.config.tracers:
-            if isinstance(tracer, InMemoryTracer):
-                traces = tracer.dump_traces()
-                break
+        try:
+            response = agent.run(message=query, custom_llm_client_provider=client_provider_func)
+
+            # Extract traces
+            for tracer in agent.config.tracers:
+                if isinstance(tracer, InMemoryTracer):
+                    traces = tracer.dump_traces()
+                    break
+        except Exception as e:
+            logger.warning("Agent run or trace extraction failed: %s", e)
 
         # Process traces into trajectory format
         trajectories = self.trace_processor(traces)
