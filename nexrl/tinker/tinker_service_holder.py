@@ -376,7 +376,37 @@ class TinkerServiceHolder:
 
         return list(logprobs) if logprobs else []
 
-    def forward_backward(
+    # Fields that the tinker server does NOT accept in loss_fn_inputs.
+    # They are used client-side only (e.g. by weaver) and must be stripped
+    # before sending to tinker, similar to tinker-cookbook's _remove_mask().
+    _EXCLUDED_LOSS_FN_KEYS = frozenset({"loss_mask"})
+
+    def _datums_from_dicts(self, datums_data: list[dict]) -> list:
+        """Convert serializable datum dicts to tinker Datum objects.
+
+        Strips keys in ``_EXCLUDED_LOSS_FN_KEYS`` so the tinker server
+        only receives the fields it knows about.
+        """
+        import torch
+        from tinker import types
+        from tinker.types.tensor_data import TensorData
+
+        datums = []
+        for d in datums_data:
+            loss_fn_inputs = {}
+            for key, value in d["loss_fn_inputs"].items():
+                if key in self._EXCLUDED_LOSS_FN_KEYS:
+                    continue
+                loss_fn_inputs[key] = TensorData.from_torch(torch.tensor(value))
+
+            datum = types.Datum(
+                model_input=types.ModelInput.from_ints(tokens=d["input_tokens"]),
+                loss_fn_inputs=loss_fn_inputs,
+            )
+            datums.append(datum)
+        return datums
+
+    def forward_backward(  # pylint: disable=unused-argument
         self,
         datums_data: list[dict],
         loss_fn: str = "importance_sampling",
@@ -393,27 +423,9 @@ class TinkerServiceHolder:
         Returns:
             Dictionary with loss and metrics
         """
-        import torch
-        from tinker import types
-        from tinker.types.tensor_data import TensorData
+        datums = self._datums_from_dicts(datums_data)
 
-        # Convert serializable dicts back to Datum objects
-        datums = []
-        for d in datums_data:
-            loss_fn_inputs = {}
-            for key, value in d["loss_fn_inputs"].items():
-                loss_fn_inputs[key] = TensorData.from_torch(torch.tensor(value))
-
-            datum = types.Datum(
-                model_input=types.ModelInput.from_ints(tokens=d["input_tokens"]),
-                loss_fn_inputs=loss_fn_inputs,
-            )
-            datums.append(datum)
-
-        # Call forward_backward
-        fwd_bwd_future = self._training_client.forward_backward(
-            datums, loss_fn=loss_fn, loss_fn_config=loss_fn_config
-        )
+        fwd_bwd_future = self._training_client.forward_backward(datums, loss_fn=loss_fn)
         result = fwd_bwd_future.result()
 
         return {
@@ -426,7 +438,9 @@ class TinkerServiceHolder:
         learning_rate: float = 2e-6,
         beta1: float = 0.9,
         beta2: float = 0.95,
+        weight_decay: float = 1e-2,
         eps: float = 1e-8,
+        grad_clip_norm: float = 1.0,
     ) -> dict:
         """
         Run optimizer step using the training client.
@@ -435,7 +449,9 @@ class TinkerServiceHolder:
             learning_rate: Learning rate
             beta1: Adam beta1
             beta2: Adam beta2
+            weight_decay: AdamW weight decay
             eps: Adam epsilon
+            grad_clip_norm: Gradient clipping norm
 
         Returns:
             Dictionary with optimizer step result
@@ -446,7 +462,9 @@ class TinkerServiceHolder:
             learning_rate=learning_rate,
             beta1=beta1,
             beta2=beta2,
+            weight_decay=weight_decay,
             eps=eps,
+            grad_clip_norm=grad_clip_norm,
         )
 
         optim_future = self._training_client.optim_step(adam_params)
@@ -454,6 +472,7 @@ class TinkerServiceHolder:
 
         return {"status": "success"}
 
+    # pylint: disable=unused-argument
     def forward_backward_and_optim_step(
         self,
         datums_data: list[dict],
@@ -462,7 +481,9 @@ class TinkerServiceHolder:
         learning_rate: float = 2e-6,
         beta1: float = 0.9,
         beta2: float = 0.95,
+        weight_decay: float = 1e-2,
         eps: float = 1e-8,
+        grad_clip_norm: float = 1.0,
     ) -> dict:
         """
         Run forward-backward pass and optimizer step together, waiting for both futures.
@@ -478,32 +499,18 @@ class TinkerServiceHolder:
             learning_rate: Learning rate
             beta1: Adam beta1
             beta2: Adam beta2
+            weight_decay: AdamW weight decay
             eps: Adam epsilon
+            grad_clip_norm: Gradient clipping norm
 
         Returns:
             Dictionary with all metrics from forward_backward (no hard-coded "loss" field)
         """
-        import torch
         from tinker import types
-        from tinker.types.tensor_data import TensorData
 
-        # Convert serializable dicts back to Datum objects
-        datums = []
-        for d in datums_data:
-            loss_fn_inputs = {}
-            for key, value in d["loss_fn_inputs"].items():
-                loss_fn_inputs[key] = TensorData.from_torch(torch.tensor(value))
+        datums = self._datums_from_dicts(datums_data)
 
-            datum = types.Datum(
-                model_input=types.ModelInput.from_ints(tokens=d["input_tokens"]),
-                loss_fn_inputs=loss_fn_inputs,
-            )
-            datums.append(datum)
-
-        # Call forward_backward and optim_step together to get futures
-        fwd_bwd_future = self._training_client.forward_backward(
-            datums, loss_fn=loss_fn, loss_fn_config=loss_fn_config
-        )
+        fwd_bwd_future = self._training_client.forward_backward(datums, loss_fn=loss_fn)
 
         adam_params = types.AdamParams(
             learning_rate=learning_rate,
@@ -513,11 +520,9 @@ class TinkerServiceHolder:
         )
         optim_future = self._training_client.optim_step(adam_params)
 
-        # Wait for both futures together
         fwd_bwd_result = fwd_bwd_future.result()
         _ = optim_future.result()
 
-        # Return all metrics from forward_backward (no hard-coded "loss" field)
         return dict(fwd_bwd_result.metrics) if hasattr(fwd_bwd_result, "metrics") else {}
 
     def save_weights_for_sampler(self, name: str) -> str:

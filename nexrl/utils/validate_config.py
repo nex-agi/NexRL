@@ -147,7 +147,10 @@ def validate_config(config: DictConfig) -> None:
             len(train_identifiers) > 0
         ), "At least one train_service group with identifier (or model_tag) is required"
 
-    if config.trainer.get("sync_weight_path", None) is not None:
+    # sync_weight_path consistency is only required in self-hosted mode (disk/network).
+    # Weaver and Tinker handle weight sync internally and do not use sync_weight_path.
+    is_self_hosted_sync = config.weight.sync_method not in ("weaver", "tinker")
+    if is_self_hosted_sync and config.trainer.get("sync_weight_path", None) is not None:
         assert (
             config.trainer.sync_weight_path == config.weight.sync_weight_path
         ), "sync_weight_path must be the same for trainer and weight sync"
@@ -155,6 +158,25 @@ def validate_config(config: DictConfig) -> None:
 
     # Get actor train service for backend checks
     actor_train_service = get_actor_train_service_config(config)
+
+    # Validate that the actor train service identifier matches the inference service identifier.
+    # WeightSyncController registers rollout services by inference_service.identifier, and
+    # the trainer calls train_worker_notify_weight_update with its own identifier — they must match.
+    inference_identifier = identifier or model_tag
+    if is_flat_structure:
+        actor_train_identifier = train_service.get("identifier") or train_service.get("model_tag")
+    else:
+        actor_train_identifier = actor_train_service.get("identifier") or actor_train_service.get(
+            "model_tag"
+        )
+
+    if actor_train_identifier and inference_identifier:
+        assert actor_train_identifier == inference_identifier, (
+            f"Actor train service identifier '{actor_train_identifier}' must match "
+            f"inference service identifier '{inference_identifier}'. "
+            "WeightSyncController registers rollout services by inference_service.identifier, "
+            "but the trainer notifies weight updates using the train service identifier."
+        )
 
     # Check if any train service uses tinker backend
     train_backends = []
