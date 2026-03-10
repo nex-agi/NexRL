@@ -102,9 +102,14 @@ class PigLatinRolloutWorker(BaseRolloutWorker):
         # Create loss mask (0 for prompt, 1 for completion)
         loss_mask = [0] * len(prompt_tokens) + [1] * len(completion_tokens)
 
-        # For supervised learning, we can use exact match as reward
-        # In cross entropy training, this reward is mainly for logging purposes
-        reward = 1.0  # All supervised examples get reward of 1.0
+        # Truncate before reward so evaluation reflects the actual training data
+        tokens, loss_mask, _, is_truncated = self._check_and_truncate(tokens, loss_mask)
+
+        if is_truncated:
+            logger.warning("Reward reset to 0.0 due to sequence truncation")
+            reward = 0.0
+        else:
+            reward = 1.0
 
         # Create trajectory dataclass
         trajectory = Trajectory(
@@ -120,6 +125,7 @@ class PigLatinRolloutWorker(BaseRolloutWorker):
                 "temperature": self._config.get("temperature", 0.0),
                 "finish_reason": "supervised",  # Mark as supervised learning
                 "model_tag": self._config.get("identifier", "default"),
+                "is_truncated": is_truncated,
             },
         )
 

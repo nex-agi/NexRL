@@ -55,6 +55,12 @@ class SimpleRolloutWorker(BaseRolloutWorker):
         # Create tokens and loss_mask
         tokens = prompt_tokens + response_tokens
         loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
+        logprobs = [0.0] * len(prompt_tokens) + response_logprobs
+
+        # Truncate before evaluation so reward reflects the actual training data
+        tokens, loss_mask, logprobs, is_truncated = self._check_and_truncate(
+            tokens, loss_mask, logprobs
+        )
 
         # Extract answer from response using <answer></answer> tags
         response = completion_result.get("response", "")
@@ -66,8 +72,12 @@ class SimpleRolloutWorker(BaseRolloutWorker):
         if "reward_model" in task:
             ground_truth = task["reward_model"].get("ground_truth", ground_truth)
 
-        # Calculate reward: 1.0 if answer matches ground_truth, else 0.0
-        reward = 1.0 if extracted_answer == ground_truth else 0.0
+        # Calculate reward: 0 if truncated, otherwise 1.0 if answer matches ground_truth
+        if is_truncated:
+            logger.warning("Reward reset to 0.0 due to sequence truncation")
+            reward = 0.0
+        else:
+            reward = 1.0 if extracted_answer == ground_truth else 0.0
 
         # identifier serves as model_tag for trajectory routing
         identifier = self._config.inference_service.get("identifier", "default")
@@ -87,9 +97,8 @@ class SimpleRolloutWorker(BaseRolloutWorker):
                 "temperature": self._config.temperature,
                 "finish_reason": completion_result.get("finish_reason", "stop"),
                 "model_tag": identifier,
-                # Logprobs field (0.0 for prompt, actual logprobs for response)
-                "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
-                # Additional fields for debugging
+                "logprobs": logprobs,
+                "is_truncated": is_truncated,
                 "response": response,
                 "extracted_answer": extracted_answer,
             },

@@ -59,6 +59,12 @@ class BaseRolloutWorker(NexRLModule, ABC):
         """
         super().__init__()
         self._config = config
+        self._max_sequence_length = config.get("max_sequence_length", None)
+        if self._max_sequence_length is None:
+            raise ValueError(
+                "max_sequence_length must be specified under rollout_worker config "
+                "(e.g., max_sequence_length: 16384)."
+            )
         self._stop_event = threading.Event()
         # These will be set before run() is called, so they're never actually None during operation
         self._thread: threading.Thread = None  # type: ignore  # Set in run()
@@ -175,16 +181,53 @@ class BaseRolloutWorker(NexRLModule, ABC):
         Push the trajectory to the appropriate destination based on mode.
         Routes to ValidationCollector during validation, TrajectoryPool during training.
 
+        Callers must handle truncation and reward adjustment BEFORE calling
+        this method (via _check_and_truncate). If a trajectory still exceeds
+        max_sequence_length here, this method raises an error.
+
         Args:
             trajectory: Trajectory to push
 
         Returns:
             str: 'success', 'fail', or 're-rollout'
         """
+        if len(trajectory.tokens) > self._max_sequence_length:
+            raise ValueError(
+                f"Trajectory exceeds max_sequence_length at _put_trajectory: "
+                f"len(tokens)={len(trajectory.tokens)}, max_sequence_length={self._max_sequence_length}. "
+                "Truncation must be done before evaluation (via _check_and_truncate)."
+            )
+
         if self._is_running_validate:
             return execute(self._validator.put_trajectory, trajectory)
         else:
             return execute(self._trajectory_pool.put_trajectory, trajectory)
+
+    def _check_and_truncate(
+        self,
+        tokens: list,
+        loss_mask: list,
+        logprobs: list | None = None,
+    ) -> tuple[list, list, list | None, bool]:
+        """
+        Check if a token sequence exceeds max_sequence_length and truncate if needed.
+
+        Call this BEFORE evaluation so the evaluator can factor truncation into reward.
+
+        Returns:
+            (tokens, loss_mask, logprobs, is_truncated)
+        """
+        if len(tokens) <= self._max_sequence_length:
+            return tokens, loss_mask, logprobs, False
+
+        logger.warning(
+            f"Sequence truncated from {len(tokens)} to {self._max_sequence_length} tokens"
+        )
+        tokens = tokens[: self._max_sequence_length]
+        loss_mask = loss_mask[: self._max_sequence_length]
+        if logprobs is not None:
+            logprobs = logprobs[: self._max_sequence_length]
+        return tokens, loss_mask, logprobs, True
 
     def _put_rollout_task(self, task: dict[str, Any]) -> bool:
         """
