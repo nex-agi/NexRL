@@ -52,6 +52,22 @@ def validate_config(config: DictConfig) -> None:
         config.data.max_response_length == config.service.inference_service.max_tokens
     ), "max_response_length must be equal to max_tokens"
 
+    # Validate max_sequence_length in rollout_worker
+    max_sequence_length = config.rollout_worker.get("max_sequence_length", None)
+    assert max_sequence_length is not None, (
+        "rollout_worker.max_sequence_length must be specified. "
+        "It should be >= max_prompt_length + max_response_length. "
+        "For multi-turn rollout, it is typically larger than max_prompt_length + max_response_length."
+    )
+    max_prompt_length = config.data.get("max_prompt_length", 0)
+    max_response_length = config.rollout_worker.get("max_response_length", 0)
+    assert max_sequence_length >= max_prompt_length + max_response_length, (
+        f"rollout_worker.max_sequence_length ({max_sequence_length}) must be >= "
+        f"max_prompt_length ({max_prompt_length}) + max_response_length ({max_response_length}) "
+        f"= {max_prompt_length + max_response_length}. "
+        "For multi-turn rollout, it is typically larger than max_prompt_length + max_response_length."
+    )
+
     # Validate inference_service has identifier (with backward compatibility for model_tag)
     import warnings
 
