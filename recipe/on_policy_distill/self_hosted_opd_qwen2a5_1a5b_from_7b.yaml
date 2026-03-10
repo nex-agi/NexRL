@@ -95,8 +95,8 @@ data:
   # max_prompt_length: Maximum prompt length in tokens
   max_prompt_length: 4096
 
-  # max_response_length: Maximum response length in tokens
-  max_response_length: 8192
+  # max_response_length: Reference from rollout_worker (source of truth)
+  max_response_length: ${rollout_worker.max_response_length}
 
   # tokenizer_path: Path to tokenizer (HuggingFace format)
   tokenizer_path: ${service.inference_service.model_path}
@@ -165,7 +165,11 @@ rollout_worker:
   max_prompt_length: ${data.max_prompt_length}
 
   # max_response_length: Maximum tokens in generated response
-  max_response_length: ${data.max_response_length}
+  max_response_length: 8192
+
+  # max_sequence_length should be >= max_prompt_length + max_response_length.
+  # For multi-turn rollout, it is typically larger than max_prompt_length + max_response_length.
+  max_sequence_length: 12288
 
 #==========================================
 # TRAJECTORY POOL CONFIGURATION
@@ -202,12 +206,6 @@ trainer:
   #   - self_hosted_grpo: GRPO trainer for self-hosted backend
   #   - self_hosted_opd: On-Policy Distillation trainer for self-hosted backend
   type: "self_hosted_opd"
-
-  # max_prompt_length: Maximum tokens in input prompt
-  max_prompt_length: ${data.max_prompt_length}
-
-  # max_response_length: Maximum tokens in generated response
-  max_response_length: ${data.max_response_length}
 
   # Clip-based distillation settings
   use_distillation_clipping: false

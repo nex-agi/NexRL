@@ -55,7 +55,7 @@ data:
   prompt_key: "prompt"
   filter_prompts: false
   max_prompt_length: 4096
-  max_response_length: 2048
+  max_response_length: ${rollout_worker.max_response_length}
 
   tokenizer_path: "Qwen/Qwen3-8B"
   shuffle: true
@@ -72,7 +72,10 @@ rollout_worker:
   temperature: 0.8
 
   max_prompt_length: ${data.max_prompt_length}
-  max_response_length: ${data.max_response_length}
+  max_response_length: 2048
+  # max_sequence_length should be >= max_prompt_length + max_response_length.
+  # For multi-turn rollout, it is typically larger than max_prompt_length + max_response_length.
+  max_sequence_length: 6144
 
 #==========================================
 # TRAJECTORY POOL CONFIGURATION
@@ -91,9 +94,6 @@ trajectory_pool:
 
 trainer:
   type: "remote_api_opd"  # Remote API OPD trainer
-
-  max_prompt_length: ${data.max_prompt_length}
-  max_response_length: ${data.max_response_length}
 
   # Teacher configuration(s)
   # Each teacher is a separate sampling client
