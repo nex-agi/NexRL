@@ -1,0 +1,224 @@
+# Copyright (c) Nex-AGI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+project_name: "NexRL-Weaver-OPD"
+experiment_name: "weaver-opd-qwen3-8b-from-32b"
+
+launch_mode: "local"
+multi_model: "false"
+
+#==========================================
+# LOGGING CONFIGURATION
+#==========================================
+
+logger:
+  backend: ['console', 'wandb']
+  enable_feishu_logging: false
+  feishu_url: ""
+
+#==========================================
+# RESUME CONFIGURATION
+#==========================================
+
+resume:
+  mode: disable
+  resume_path: ""
+  resume_dataloader: true
+
+#==========================================
+# DATA LOADER CONFIGURATION
+#==========================================
+
+data:
+  type: "torch"
+  seed: 42
+
+  # Example: Use your own dataset
+  data_files:
+    - "${oc.env:NEXRL_DATA_PATH}/opd/train.parquet"
+
+  batch_size: 32
+  keep_batch_order: true
+  rollout_repeat_n: 1  # OPD typically uses 1 sample per prompt
+
+  prompt_key: "prompt"
+  filter_prompts: false
+  max_prompt_length: 4096
+  max_response_length: 2048
+
+  tokenizer_path: "Qwen/Qwen3-8B"
+  shuffle: true
+  drop_last: true
+
+#==========================================
+# ROLLOUT CONFIGURATION
+#==========================================
+
+rollout_worker:
+  type: "simple"  # Use simple rollout or your custom agent
+  num_workers: 32
+  need_llm_inference: true
+  temperature: 0.8
+
+  max_prompt_length: ${data.max_prompt_length}
+  max_response_length: ${data.max_response_length}
+
+#==========================================
+# TRAJECTORY POOL CONFIGURATION
+#==========================================
+
+trajectory_pool:
+  type: "default"
+  batch_size: ${data.batch_size}
+  group_size: 1  # No grouping for OPD
+  key_list: []
+  check_batch_ready_function: "loaded_batch_finished"
+
+#==========================================
+# TRAINER CONFIGURATION - OPD
+#==========================================
+
+trainer:
+  type: "remote_api_opd"  # Remote API OPD trainer
+
+  max_prompt_length: ${data.max_prompt_length}
+  max_response_length: ${data.max_response_length}
+
+  # Teacher configuration(s)
+  # Each teacher is a separate sampling client
+  teachers:
+    - base_model: "Qwen/Qwen3-32B"  # Teacher model (different from student)
+      checkpoint: null                # Optional: fine-tuned teacher checkpoint
+      # Optional: separate Weaver service for teacher
+      # base_url: "${oc.env:TEACHER_WEAVER_BASE_URL,}"
+      # api_key: "${oc.env:TEACHER_WEAVER_API_KEY,}"
+
+  # Multi-teacher example (uncomment to enable):
+  # teachers:
+  #   - base_model: "Qwen/Qwen3-32B"
+  #     checkpoint: null
+  #   - base_model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
+  #     base_url: "https://large-teacher-service.example.com"
+  #     api_key: "${oc.env:LARGE_TEACHER_API_KEY}"
+
+  #----------------------------------------
+  # TRAINING SETTINGS
+  #----------------------------------------
+
+  total_train_steps: 1000
+  save_freq: 100
+  checkpoint_path: "${oc.env:EXPERIMENT_PATH}/ckpt"
+  sync_weight_path: "${oc.env:EXPERIMENT_PATH}/sync_weight"
+  remove_previous_ckpt: false
+
+#==========================================
+# WEIGHT MANAGEMENT CONFIGURATION
+#==========================================
+
+weight:
+  type: "default"
+  sync_mode: "sync"  # Wait for training before new rollouts
+  staleness_threshold: 0
+  sync_method: "weaver"  # Use Weaver-specific weight sync
+  sync_weight_path: ${trainer.sync_weight_path}
+  validate_freq: ${validate.eval.validate_freq}
+
+#==========================================
+# VALIDATION CONFIGURATION
+#==========================================
+
+validate:
+  validate_before_train: false
+  max_response_length: ${data.max_response_length}
+
+  data:
+    type: "torch"
+    seed: ${data.seed}
+    data_files:
+      - "${oc.env:NEXRL_DATA_PATH}/opd/val.parquet"
+    batch_size: 64
+    prompt_key: "prompt"
+    filter_prompts: false
+    max_prompt_length: ${data.max_prompt_length}
+    tokenizer_path: ${data.tokenizer_path}
+    shuffle: false
+    drop_last: false
+
+  eval:
+    type: "default"
+    validate_freq: 10
+
+#==========================================
+# SERVICE CONFIGURATION - WEAVER
+#==========================================
+
+service:
+  #----------------------------------------
+  # Inference Service (Student Rollout)
+  #----------------------------------------
+  inference_service:
+    identifier: "student"
+    model: "Qwen/Qwen3-8B"  # Student model
+    max_tokens: ${data.max_response_length}
+    tokenizer: null
+    backend: weaver
+    max_retries: 3
+    freeze_for_weight_sync: true
+    weight_type: ""
+
+  #----------------------------------------
+  # Weaver Service Configuration
+  #----------------------------------------
+  weaver_service:
+    base_url: null  # Uses default or WEAVER_BASE_URL env var
+    lora_rank: 32
+    api_key: "${oc.env:WEAVER_API_KEY}"
+
+  #----------------------------------------
+  # Training Service (Student Training)
+  #----------------------------------------
+  train_service:
+    main_actor:
+      identifier: "default"
+      role: "actor"
+      backend: weaver
+
+      config:
+        loss_fn: "importance_sampling"
+        learning_rate: 1e-4
+        beta1: 0.9
+        beta2: 0.95
+        weight_decay: 1e-2
+        eps: 1e-8
+        grad_clip_norm: 1.0
+
+        # OPD hyperparameters
+        kl_penalty_coef: 1.0          # Coefficient for KL penalty (1.0 = full distillation)
+        kl_discount_factor: 0.0       # Discount factor for future KL (0.0 = no discounting)
+        entropy_coeff: 1e-4           # Entropy regularization coefficient
+
+#==========================================
+# RUNTIME MONITORING CONFIGURATION
+#==========================================
+
+runtime_monitor:
+  exception_handling:
+    enabled: true
+    check_interval: 1.0
+    policy: "stop_on_error"
+
+  health_check:
+    enabled: true
+    check_interval: 10.0
+    timeout: 5.0

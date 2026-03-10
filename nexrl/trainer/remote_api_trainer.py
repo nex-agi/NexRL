@@ -99,6 +99,15 @@ class RemoteApiTrainer(BaseTrainer):
             f"debug_dump_enabled={self._data_dumper.enabled}"
         )
 
+    def set_train_step(self, step: int) -> None:
+        """
+        Override: also restore _step_counter so weight save names continue
+        from the correct offset after checkpoint resume.
+        """
+        super().set_train_step(step)
+        self._step_counter = step
+        logger.info(f"RemoteApiTrainer step_counter synced to {step}")
+
     def set_service_holder(self, service_holder: TinkerServiceHolder | WeaverServiceHolder) -> None:
         """
         Set the service holder.

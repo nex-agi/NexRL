@@ -80,8 +80,11 @@ RUN WHEEL_FILE=$(ls /tmp/*.whl) && \
     pip install --no-cache-dir "${WHEEL_FILE}[${NEXRL_EXTRAS}]" && \
     rm -rf /tmp/*.whl
 
-# Install sglang without dependencies to bypass openai version pin conflicts.
-RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}"
+# Install sglang without dependencies to bypass openai/torch/grpcio version pin conflicts.
+# Then install only the lightweight utility packages that sglang's tool/reasoning parsers
+# actually need at runtime, none of which conflict with nexau's pinned versions.
+RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
+    pip install --no-cache-dir pybase64 partial-json-parser orjson
 
 
 RUN pip uninstall -y flash-attn && \
