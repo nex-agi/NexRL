@@ -90,10 +90,6 @@ class SelfHostedTrainer(BaseTrainer):
         )
         self.tokenizer = hf_tokenizer(tokenizer_path)
 
-        # Configuration for trajectory processing
-        self._max_prompt_length = config.get("max_prompt_length", 4096)
-        self._max_response_length = config.get("max_response_length", 2048)
-
         # Training statistics
         self._training_stats = {
             "batches_processed": 0,
@@ -356,9 +352,10 @@ class SelfHostedTrainer(BaseTrainer):
 
         Uses **Unified Sequence Padding**: the prompt/response split point is fixed
         at position 1 (first token = prompt, rest = response).  The batch is padded
-        to ``total_width = min(max_total_len, max_prompt_length + max_response_length)``
-        so that the padded tensor width reflects actual data lengths rather than the
-        independent max of prompt and response lengths across the batch.
+        to ``total_width = max_total_len`` (the longest sequence in the batch) so
+        that shorter sequences are right-padded to match.
+
+        Truncation is handled upstream by the rollout worker.
 
         The real prompt vs. response distinction is carried by ``loss_mask``
         (0 = prompt/tool-output, 1 = model response to train on).
@@ -371,30 +368,17 @@ class SelfHostedTrainer(BaseTrainer):
         """
         pad_token_id = self.tokenizer.pad_token_id
 
-        # --- Compute unified total_width ---
+        # --- Compute unified total_width from actual data ---
         max_total_len = 0
         for traj in trajectories:
             max_total_len = max(max_total_len, len(traj.tokens))
 
-        configured_max = self._max_prompt_length + self._max_response_length
-        total_width = min(max_total_len, configured_max)
-
         # Ensure total_width >= 2 so that prompt (1 token) + response (>=1 token) is valid
-        total_width = max(total_width, 2)
+        total_width = max(max_total_len, 2)
 
         response_width = total_width - 1  # prompt is always 1 token
 
-        if max_total_len > configured_max:
-            logger.warning(
-                f"Truncating trajectories: max_total_len={max_total_len} exceeds "
-                f"configured max ({self._max_prompt_length}+{self._max_response_length}"
-                f"={configured_max}). Capping to {total_width}."
-            )
-
-        logger.info(
-            f"Unified padding: max_total_len={max_total_len}, "
-            f"configured_max={configured_max}, total_width={total_width}"
-        )
+        logger.info(f"Unified padding: total_width={total_width}")
 
         for traj in trajectories:
             tokens = traj.tokens
@@ -409,9 +393,6 @@ class SelfHostedTrainer(BaseTrainer):
             prompt_tokens = tokens[:1]
             response_tokens = tokens[1:total_width]
             response_loss_mask_values = loss_mask_values[1:total_width]
-
-            if len(tokens) > total_width:
-                logger.debug(f"Trajectory truncated from {len(tokens)} to {total_width} tokens")
 
             # Prompt: exactly 1 token, no padding needed
             prompt_input_ids = torch.tensor([prompt_tokens], dtype=torch.long)

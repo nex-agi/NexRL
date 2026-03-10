@@ -60,6 +60,7 @@ class NexAUEvaluationTarget(BaseEvaluationTarget):
     final_answer: str  # Final answer produced by the agent
     observation: list[dict[str, Any]]  # Complete execution trajectory containing
     # all intermediate steps and observations
+    is_truncated: bool = False  # Whether the token sequence was truncated to max_sequence_length
 
 
 # =============================================================================
@@ -458,18 +459,18 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(logs, f, ensure_ascii=False, indent=2)
 
-    def run_agent(self, task: dict[str, Any]) -> tuple[Any, EvaluationRunResult]:
+    def run_agent(self, task: dict[str, Any]) -> Any:
         """
-        Run the agent and evaluate the result.
+        Run the agent and return its output (without evaluation).
 
-        This is a default implementation that works for most tasks.
-        Subclasses can override this method for task-specific behavior (e.g., custom query formatting).
+        Evaluation is deferred to rollout() so it can happen after truncation.
+        Subclasses can override this method for task-specific behavior.
 
         Args:
             task: Task dictionary containing input data (must have 'prompt', 'query', or 'question' field)
 
         Returns:
-            Tuple of (agent_output, evaluation_result)
+            agent_output with final_answer, observation, and rl_params
         """
         from nexau.archs.tracer.adapters import InMemoryTracer
 
@@ -508,30 +509,13 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
             final_answer=response, observation=agent.history, rl_params={"trajectory": trajectories}
         )
 
-        # Evaluate
-        if self.evaluator is None:
-            raise ValueError("Evaluator not initialized")
-
-        evaluation_result = self.evaluator.evaluate(
-            task,
-            NexAUEvaluationTarget(
-                final_answer=agent_output.final_answer, observation=agent_output.observation
-            ),
-        )
-
-        # Add reward and score to each trajectory
-        for traj in trajectories:
-            traj["reward"] = evaluation_result.reward
-            traj["score"] = {
-                "reward_score": evaluation_result.reward,
-                **evaluation_result.metrics,
-            }
-
-        return agent_output, evaluation_result
+        return agent_output
 
     def rollout(self, task: dict[str, Any]) -> str | None:
         """
-        Execute rollout: run agent, process traces, create trajectories.
+        Execute rollout: run agent, truncate, evaluate, create trajectories.
+
+        Flow: agent run -> trace processing -> merge -> truncate -> evaluate -> trajectory
 
         Args:
             task: Task dictionary
@@ -541,23 +525,10 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         """
         logger.debug(f"Starting rollout for task: {task.get('query', '')[:50]}")
 
-        # Run agent and get evaluation result
-        agent_output, evaluation_result = self.run_agent(task)
+        # Step 1: Run agent (no evaluation yet)
+        agent_output = self.run_agent(task)
 
-        # Save trace
-        self.save_trace(
-            task.get("group_id", ""),
-            task.get("run_id", 0),
-            task.get("step", 0),
-            {
-                "history": getattr(agent_output, "observation", []),
-                "reward": evaluation_result.reward,
-                "metrics": evaluation_result.metrics,
-                "extra_info": evaluation_result.extra_info,
-            },
-        )
-
-        # Process trajectories
+        # Step 2: Process traces into token sequences
         rl_params = getattr(agent_output, "rl_params", {})
         nexau_trajectories = rl_params.get("trajectory", [])
 
@@ -572,7 +543,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
             processed["finish_reason"] = nexau_traj.get("finish_reason", "stop")
             processed_trajectories.append(processed)
 
-        # Merge trajectories if enabled
+        # Step 3: Merge trajectories if enabled
         if self._config.get("enable_trace_prefix_merge", True):
             merged_trajectories = self.trace_prefix_merge(processed_trajectories)
         else:
@@ -583,7 +554,49 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
             f"merged to {len(merged_trajectories)}"
         )
 
-        # Create Trajectory objects and put into pool
+        # Step 4: Truncate BEFORE evaluation so evaluator can factor it in
+        is_truncated = False
+        for traj_dict in merged_trajectories:
+            traj_dict["tokens"], traj_dict["loss_mask"], traj_dict["logprobs"], truncated = (
+                self._check_and_truncate(
+                    traj_dict["tokens"], traj_dict["loss_mask"], traj_dict["logprobs"]
+                )
+            )
+            if truncated:
+                is_truncated = True
+
+        # Step 5: Evaluate with truncation info
+        if self.evaluator is None:
+            raise ValueError("Evaluator not initialized")
+
+        evaluation_result = self.evaluator.evaluate(
+            task,
+            NexAUEvaluationTarget(
+                final_answer=agent_output.final_answer,
+                observation=agent_output.observation,
+                is_truncated=is_truncated,
+            ),
+        )
+
+        if is_truncated:
+            logger.warning("Reward reset to 0.0 due to sequence truncation")
+            evaluation_result.reward = 0.0
+
+        # Save trace
+        self.save_trace(
+            task.get("group_id", ""),
+            task.get("run_id", 0),
+            task.get("step", 0),
+            {
+                "history": getattr(agent_output, "observation", []),
+                "reward": evaluation_result.reward,
+                "metrics": evaluation_result.metrics,
+                "extra_info": evaluation_result.extra_info,
+                "is_truncated": is_truncated,
+            },
+        )
+
+        # Step 6: Create Trajectory objects and put into pool
         last_result = None
         for traj_dict in merged_trajectories:
             trajectory = Trajectory(
@@ -600,6 +613,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
                     "finish_reason": traj_dict.get("finish_reason", "stop"),
                     "score": {"reward_score": evaluation_result.reward},
                     "logprobs": traj_dict["logprobs"],
+                    "is_truncated": is_truncated,
                 },
             )
 

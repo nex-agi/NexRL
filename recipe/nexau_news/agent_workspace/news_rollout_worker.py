@@ -22,7 +22,6 @@ from typing import Any
 
 from nexau.archs.tracer.adapters import InMemoryTracer
 
-from nexrl.rollout_worker import EvaluationRunResult, NexAUEvaluationTarget
 from nexrl.rollout_worker.base_nexau_rollout_worker import BaseNexAURolloutWorker
 
 logger = logging.getLogger(__name__)
@@ -79,15 +78,17 @@ class NewsNexAURolloutWorker(BaseNexAURolloutWorker):
 
         return f"{news_has_been_pushed}\n{news_to_be_judged}"
 
-    def run_agent(self, task: dict[str, Any]) -> tuple[Any, EvaluationRunResult]:
+    def run_agent(self, task: dict[str, Any]) -> Any:
         """
-        Run the news agent and evaluate the result.
+        Run the news agent (without evaluation).
+
+        Evaluation is deferred to rollout() so it can happen after truncation.
 
         Args:
             task: Task dictionary containing news data
 
         Returns:
-            Tuple of (agent_output, evaluation_result)
+            agent_output with final_answer, observation, and rl_params
         """
         # Format query
         query = self._format_news_query(task)
@@ -123,23 +124,4 @@ class NewsNexAURolloutWorker(BaseNexAURolloutWorker):
             final_answer=response, observation=agent.history, rl_params={"trajectory": trajectories}
         )
 
-        # Evaluate
-        if self.evaluator is None:
-            raise ValueError("Evaluator not initialized")
-
-        evaluation_result = self.evaluator.evaluate(
-            task,
-            NexAUEvaluationTarget(
-                final_answer=agent_output.final_answer, observation=agent_output.observation
-            ),
-        )
-
-        # Add reward and score to each trajectory
-        for traj in trajectories:
-            traj["reward"] = evaluation_result.reward
-            traj["score"] = {
-                "reward_score": evaluation_result.reward,
-                **evaluation_result.metrics,
-            }
-
-        return agent_output, evaluation_result
+        return agent_output

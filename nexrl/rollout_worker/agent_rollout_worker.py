@@ -143,6 +143,16 @@ class AgentRolloutWorker(BaseRolloutWorker):
             # Create tokens and loss_mask
             tokens = prompt_tokens + response_tokens
             loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
+            logprobs = [0.0] * len(prompt_tokens) + response_logprobs
+
+            # Truncate before reward so evaluation reflects the actual training data
+            tokens, loss_mask, logprobs, is_truncated = self._check_and_truncate(
+                tokens, loss_mask, logprobs
+            )
+
+            if is_truncated and agent_result.get("reward"):
+                logger.warning("Reward reset to 0.0 due to sequence truncation")
+                agent_result["reward"] = 0.0
 
             # Create Trajectory dataclass
             trajectory = Trajectory(
@@ -161,6 +171,8 @@ class AgentRolloutWorker(BaseRolloutWorker):
                     "model_tag": identifier,  # identifier serves as model_tag for trajectory routing
                     # Logprobs field (0.0 for prompt, actual logprobs for response)
                     "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
+                    "sampling_mask": agent_result.get("sampling_mask", None),
+                    "is_truncated": is_truncated,
                 },
             )
 
