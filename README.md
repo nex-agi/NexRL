@@ -63,6 +63,11 @@ Install NexRL:
 ```bash
 git clone git@github.com:nex-agi/NexRL.git
 cd NexRL
+
+# Full install (training + all core dependencies)
+pip install -e ".[core]"
+
+# Or lightweight install (CLI job submission only, no torch/ray/etc.)
 pip install -e .
 ```
 
@@ -82,7 +87,7 @@ nexrl -m training-service \
   --run-nexrl
 ```
 
-Uses public images (`nexagi/nexrl:v1.3.1`, `lmsysorg/sglang:v0.5.4.post2`) and `/tmp` storage - perfect for testing!
+Uses public images (`nexagi/nexrl:v1.4.0`, `lmsysorg/sglang:v0.5.4.post2`) and `/tmp` storage - perfect for testing!
 
 **Development Setup**
 
@@ -132,8 +137,8 @@ nexrl -m self-hosted \
 
 **Key Variables:**
 - `NEXRL_STORAGE_PATH`: Storage path (default: `/tmp/nexrl`)
-- `NEXRL_WORKER_IMAGE`: Worker image (default: `nexagi/nexrl:v1.3.1`)
-- `NEXRL_CONTROLLER_IMAGE`: Controller image (default: `nexagi/nexrl:v1.3.1`)
+- `NEXRL_WORKER_IMAGE`: Worker image (default: `nexagi/nexrl:v1.4.0`)
+- `NEXRL_CONTROLLER_IMAGE`: Controller image (default: `nexagi/nexrl:v1.4.0`)
 - `NEXRL_INFERENCE_IMAGE`: Inference image (default: `lmsysorg/sglang:v0.5.4.post2`)
 - `WANDB_KEY`: WandB API key (optional)
 
