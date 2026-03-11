@@ -225,10 +225,11 @@ def compute_grpo_advantage_for_trajectories(
                     np.mean(run_rewards).item() for run_rewards in run_id_to_rewards.values()
                 ]
                 per_run_means_tensor = torch.tensor(per_run_means)
-                # mean_reward = np.mean(per_run_means)
-                # std_reward = np.std(per_run_means)
                 mean_reward = per_run_means_tensor.mean()
-                std_reward = torch.std(per_run_means_tensor)
+                if len(per_run_means) <= 1:
+                    std_reward = torch.tensor(1.0)
+                else:
+                    std_reward = torch.std(per_run_means_tensor)
             else:
                 mean_reward = np.mean(rewards)
                 std_reward = np.std(rewards)
