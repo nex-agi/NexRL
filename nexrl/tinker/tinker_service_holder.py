@@ -358,6 +358,72 @@ class TinkerServiceHolder:
             "is_valid": True,
         }
 
+    def sample_from_token_ids(
+        self,
+        input_ids: list[int],
+        max_tokens: int,
+        temperature: float = 1.0,
+        num_samples: int = 1,
+        stop: list[str] | None = None,
+    ) -> dict:
+        """
+        Sample from the model given pre-tokenized input IDs.
+
+        Skips tokenization and passes input_ids directly to the model.
+        Decodes response tokens and extracts reasoning/tool strings via _parse_response().
+
+        Args:
+            input_ids: Pre-tokenized input token IDs
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            num_samples: Number of samples to generate
+            stop: Optional stop strings (falls back to configured stop sequences)
+
+        Returns:
+            Dictionary with serializable results (same structure as sample_from_messages)
+        """
+        from tinker import types
+
+        model_input = types.ModelInput.from_ints(tokens=input_ids)
+
+        sampling_params = types.SamplingParams(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=stop if stop is not None else self._stop_sequences,
+        )
+
+        sample_future = self._sampling_client.sample(
+            prompt=model_input,
+            num_samples=num_samples,
+            sampling_params=sampling_params,
+            include_prompt_logprobs=False,
+        )
+
+        sample_result = sample_future.result()
+
+        sequence = sample_result.sequences[0]
+        response_tokens = list(sequence.tokens)
+        response_logprobs = list(sequence.logprobs) if sequence.logprobs else []
+
+        parsed_message, is_valid = self._parse_response(response_tokens)
+
+        response = parsed_message["content"]
+        tool_string = parsed_message.get("tool_string")
+        reasoning_string = parsed_message.get("reasoning_string")
+
+        finish_reason = "stop" if len(response_tokens) < max_tokens else "length"
+
+        return {
+            "response": response,
+            "prompt_tokens": list(input_ids),
+            "response_tokens": response_tokens,
+            "response_logprobs": response_logprobs,
+            "finish_reason": finish_reason,
+            "tool_string": tool_string,
+            "reasoning_string": reasoning_string,
+            "is_valid": is_valid,
+        }
+
     def compute_logprobs(self, tokens: list[int]) -> list[float | None]:
         """
         Compute log probabilities for token sequence.

@@ -118,6 +118,36 @@ class InferenceServiceClient(ABC):
                 - nexrl_train: dict with prompt_tokens, response_tokens, response_logprobs
         """
 
+    def generate_with_token(
+        self,
+        input_ids: list[int],
+        sampling_params: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Call LLM inference using token IDs.
+
+        Implementations may call backend-native token generation APIs, but should
+        return a NexRL-compatible response with `nexrl_train` attached. Backends
+        may additionally normalize the payload to the same OpenAI-style structure
+        used by `generate()`.
+
+        Args:
+            input_ids: Input token IDs
+            sampling_params: SGLang-style sampling parameters dict (max_new_tokens,
+                temperature, top_p, top_k, min_p, stop, stop_token_ids, etc.)
+            **kwargs: Top-level SGLang parameters (model, return_logprob,
+                logprob_start_len, stream, rid, lora_path, etc.)
+
+        Returns:
+            dict[str, Any]: Response dict containing at minimum:
+                - nexrl_train: Dict with prompt_tokens, response_tokens, response_logprobs
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support generate_with_token(). "
+            "Use a backend that supports token-level generation (e.g., sglang, weaver, tinker)."
+        )
+
     @abstractmethod
     def apply_chat_template(
         self,

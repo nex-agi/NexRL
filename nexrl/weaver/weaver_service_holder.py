@@ -330,6 +330,96 @@ class WeaverServiceHolder:
             "is_valid": True,
         }
 
+    def sample_from_token_ids(
+        self,
+        input_ids: list[int],
+        max_tokens: int,
+        temperature: float = 1.0,
+        num_samples: int = 1,
+        stop: list[str] | None = None,
+    ) -> dict:
+        """
+        Sample from the model given pre-tokenized input IDs.
+
+        Skips tokenization and passes input_ids directly to the model.
+        Decodes response tokens and extracts reasoning/tool strings.
+
+        Args:
+            input_ids: Pre-tokenized input token IDs
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            num_samples: Number of samples to generate
+            stop: Optional stop strings
+
+        Returns:
+            Dictionary with response, prompt_tokens, response_tokens,
+            response_logprobs, finish_reason, tool_string, reasoning_string, is_valid
+        """
+        import re
+
+        from weaver import types as weaver_types
+
+        model_input = weaver_types.ModelInput.from_ints(input_ids)
+        sampling_params = weaver_types.SamplingParams(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=stop or [],
+        )
+
+        sample_result = self._sampling_client.sample(
+            prompt=model_input,
+            num_samples=num_samples,
+            sampling_params=sampling_params,
+            include_prompt_logprobs=False,
+            wait=True,
+        )
+
+        sequence = (sample_result.get("sequences") or [{}])[0]
+        response_tokens = sequence.get("tokens") or []
+        response_logprobs = sequence.get("logprobs") or []
+
+        full_response = sequence.get("text") or self._tokenizer.decode(
+            response_tokens, skip_special_tokens=True
+        )
+
+        tool_string: str | None = None
+        reasoning_string: str | None = None
+        cleaned_response = full_response
+
+        if "</think>" in full_response:
+            reasoning_match = re.search(r"^(.*?</think>)", full_response, flags=re.DOTALL)
+            if reasoning_match:
+                reasoning_string = reasoning_match.group(0)
+            cleaned_response = re.sub(
+                r"^(<think>)?(.*?)</think>\s*", "", full_response, flags=re.DOTALL
+            )
+
+        tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", full_response, re.DOTALL)
+        if tool_call_match:
+            tool_string = tool_call_match.group(0)
+
+        if tool_string:
+            cleaned_response = re.sub(
+                r"<tool_call>.*?</tool_call>\s*", "", cleaned_response, flags=re.DOTALL
+            )
+
+        cleaned_response = cleaned_response.strip()
+
+        finish_reason = sequence.get("stop_reason") or (
+            "stop" if len(response_tokens) < max_tokens else "length"
+        )
+
+        return {
+            "response": cleaned_response,
+            "prompt_tokens": list(input_ids),
+            "response_tokens": response_tokens,
+            "response_logprobs": response_logprobs,
+            "finish_reason": finish_reason,
+            "tool_string": tool_string,
+            "reasoning_string": reasoning_string,
+            "is_valid": True,
+        }
+
     def compute_logprobs(self, tokens: list[int]) -> list[float | None]:
         from weaver import types as weaver_types
 
