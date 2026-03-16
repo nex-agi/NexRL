@@ -568,6 +568,113 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         if metrics_data:
             self._activity_tracker.experiment_logger_post(backend="wandb", data=metrics_data)
 
+    def _mask_truncated_responses(self, batch: Batch) -> tuple[Batch, dict]:
+        """
+        Mask responses where finish_reason == 'length' (truncated responses).
+
+        When a response is truncated (hit max tokens), we zero out its loss_mask
+        so it doesn't contribute to the training loss. This prevents learning from
+        incomplete reasoning chains.
+
+        Args:
+            batch: Batch containing finish_reason metadata
+
+        Returns:
+            Tuple of (batch with masked loss_mask, metrics dict)
+        """
+        metrics = {}
+        if "finish_reason" not in batch.values:
+            return batch, metrics
+
+        finish_reasons = batch.values["finish_reason"]
+        batch_size = len(batch)
+        truncated_count = 0
+
+        for i in range(batch_size):
+            reason = finish_reasons[i]
+            if isinstance(reason, bytes):
+                reason = reason.decode("utf-8", errors="replace")
+            if reason == "length":
+                truncated_count += 1
+                if "loss_mask" in batch.values:
+                    if isinstance(batch.values["loss_mask"], torch.Tensor):
+                        batch.values["loss_mask"][i] = 0
+                    elif isinstance(batch.values["loss_mask"], list):
+                        batch.values["loss_mask"][i] = [0] * len(batch.values["loss_mask"][i])
+
+        truncation_ratio = truncated_count / batch_size if batch_size > 0 else 0.0
+        metrics["truncation/count"] = truncated_count
+        metrics["truncation/ratio"] = truncation_ratio
+
+        if truncated_count > 0:
+            logger.info(
+                f"Masked {truncated_count}/{batch_size} truncated responses "
+                f"(ratio={truncation_ratio:.3f})"
+            )
+
+        return batch, metrics
+
+    def _compute_rollout_length_metrics(self, batch: Batch) -> dict:
+        """
+        Compute per-prompt rollout length aggregation metrics.
+
+        Groups responses by their group_id/uid and computes length statistics
+        within each group, providing insight into response length variation
+        across different prompts.
+
+        Args:
+            batch: Batch containing response data and group IDs
+
+        Returns:
+            Dictionary of per-prompt rollout length metrics
+        """
+        metrics = {}
+
+        # Get group IDs
+        if "uid" in batch.values:
+            group_ids = batch.values["uid"]
+        elif "group_id" in batch.values:
+            group_ids = batch.values["group_id"]
+        else:
+            return metrics
+
+        # Compute response lengths
+        response_info = self._compute_response_info(batch)
+        response_lengths = response_info["response_length"]
+
+        # Group lengths by group_id
+        from collections import defaultdict
+
+        group_lengths: dict[Any, list[float]] = defaultdict(list)
+        batch_size = len(batch)
+        for i in range(batch_size):
+            gid = group_ids[i]
+            if hasattr(gid, "item"):
+                gid = gid.item()
+            length = (
+                response_lengths[i].item()
+                if isinstance(response_lengths[i], torch.Tensor)
+                else float(response_lengths[i])
+            )
+            group_lengths[gid].append(length)
+
+        # Compute per-group statistics
+        group_mean_lengths = []
+        group_std_lengths = []
+        for gid, lengths in group_lengths.items():
+            group_mean_lengths.append(np.mean(lengths))
+            if len(lengths) > 1:
+                group_std_lengths.append(np.std(lengths))
+
+        if group_mean_lengths:
+            metrics["rollout_length/per_prompt_mean"] = float(np.mean(group_mean_lengths))
+            metrics["rollout_length/per_prompt_max"] = float(np.max(group_mean_lengths))
+            metrics["rollout_length/per_prompt_min"] = float(np.min(group_mean_lengths))
+        if group_std_lengths:
+            metrics["rollout_length/per_prompt_std_mean"] = float(np.mean(group_std_lengths))
+
+        return metrics
+
     @staticmethod
     def _compute_response_info(batch: Batch) -> dict:
         """
@@ -688,6 +795,10 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
                 if use_critic
                 else {}
             ),
+            # response_length_raw: total non-padding tokens per sample (pre-truncation)
+            "response_length_raw/mean": torch.mean(actual_tokens).detach().item(),
+            "response_length_raw/max": torch.max(actual_tokens).detach().item(),
+            "response_length_raw/min": torch.min(actual_tokens).detach().item(),
             # response length (actual trainable tokens, from loss_mask)
             "response_length/mean": torch.mean(response_length).detach().item(),
             "response_length/max": torch.max(response_length).detach().item(),
@@ -708,7 +819,61 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
             .item(),
         }
 
+        # PPL metrics
+        if "old_log_probs" in batch.values:
+            old_log_probs = batch.values["old_log_probs"]
+            if isinstance(old_log_probs, torch.Tensor) and old_log_probs.dim() == 2:
+                ppl_mask = (
+                    response_mask.bool() if not response_mask.dtype == torch.bool else response_mask
+                )
+                avg_log_prob = core_algos.masked_mean(old_log_probs, ppl_mask.float())
+                ppl = torch.exp(-avg_log_prob)
+                metrics["ppl/mean"] = ppl.detach().item()
+
         if "average_agent_acc" in batch.metadata:
             for k, v in batch.metadata["average_agent_acc"].items():
                 metrics["critic/average_agent_acc/" + k] = v
         return metrics
+
+    def _maybe_dump_batch(self, batch: Batch, step: int) -> None:
+        """Dump training batch for debugging if configured."""
+        if self._data_dumper is not None and self._data_dumper.should_dump("training_batch", step):
+            self._dump_training_batch(batch, step)
+
+    def _dump_training_batch(self, batch: Batch, step: int) -> None:
+        """Dump a training batch to disk for debugging.
+
+        Saves batch values and metadata to a .pt file for offline inspection.
+
+        Args:
+            batch: The training batch to dump
+            step: Current training step number
+        """
+        import os
+
+        dump_dir = os.path.join(os.environ.get("EXPERIMENT_PATH", "/tmp"), "batch_dumps")
+        os.makedirs(dump_dir, exist_ok=True)
+
+        dump_data = {
+            "values": {},
+            "metadata": dict(batch.metadata),
+            "step": step,
+        }
+
+        for key, value in batch.values.items():
+            if isinstance(value, torch.Tensor):
+                dump_data["values"][key] = value.detach().cpu()
+            elif isinstance(value, (list, np.ndarray)):
+                dump_data["values"][key] = value
+
+        dump_path = os.path.join(dump_dir, f"batch_step_{step}.pt")
+        torch.save(dump_data, dump_path)
+        logger.info(f"Dumped training batch to {dump_path}")
+
+    def _get_train_step_increment(self) -> int:
+        """Get the training step increment value.
+
+        By default returns 1. Can be overridden by subclasses that need
+        different step scaling (e.g., KL trainers that process multiple batches).
+        """
+        return 1

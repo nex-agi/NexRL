@@ -125,6 +125,7 @@ class Batch:
         str, Any
     ]  # Tensor or non-Tensor iterable data, length should be metadata['batch_size']
     metadata: dict[str, Any]  # Metadata about the batch
+    pad_size: int = 0
 
     def __len__(self) -> int:
         assert "batch_size" in self.metadata, "batch_size must be in metadata"
@@ -179,23 +180,46 @@ class Batch:
         return ret
 
     def pad_to_world_size(self, world_size: int) -> "Batch":
-        """Pad the batch to be divisible by world_size"""
+        """Pad the batch to be divisible by world_size using zero-padding."""
         batch_size = len(self)
         if batch_size % world_size != 0:
             pad_size = world_size - (batch_size % world_size)
+            self.pad_size = pad_size
             for key, value in self.values.items():
                 if isinstance(value, torch.Tensor):
-                    self.values[key] = torch.cat([value, value[:pad_size]], dim=0)
+                    pad_shape = (pad_size,) + value.shape[1:]
+                    self.values[key] = torch.cat(
+                        [value, torch.zeros(pad_shape, dtype=value.dtype, device=value.device)],
+                        dim=0,
+                    )
                 else:
-                    # For non-tensor data, append directly
                     if isinstance(value, list):
-                        self.values[key] = value + value[:pad_size]
+                        # Zero-pad with None for non-tensor lists
+                        self.values[key] = value + [None] * pad_size
                     else:
-                        # numpy array or other iterable
                         value_array = np.asarray(value, dtype=object)
-                        padding = value_array[:pad_size]
+                        padding = np.zeros(pad_size, dtype=object)
                         self.values[key] = np.concatenate([value_array, padding], axis=0)
             self.metadata["batch_size"] = batch_size + pad_size
+        return self
+
+    def unpad(self) -> "Batch":
+        """Remove zero-padding added by pad_to_world_size().
+
+        Returns self unchanged if pad_size == 0.
+        """
+        if self.pad_size == 0:
+            return self
+        real_size = len(self) - self.pad_size
+        for key, value in self.values.items():
+            if isinstance(value, torch.Tensor):
+                self.values[key] = value[:real_size]
+            elif isinstance(value, list):
+                self.values[key] = value[:real_size]
+            elif isinstance(value, np.ndarray):
+                self.values[key] = value[:real_size]
+        self.metadata["batch_size"] = real_size
+        self.pad_size = 0
         return self
 
     @classmethod
@@ -288,13 +312,10 @@ class Batch:
             for key, value in self.values.items():
                 extracted_value = None
                 if isinstance(value, torch.Tensor):
-                    # Extract the i-th row from the tensor
                     extracted_value = value[i]
                 elif isinstance(value, (list, np.ndarray)):
-                    # Extract the i-th element from the list/array
                     extracted_value = value[i]
                 else:
-                    # For scalar values, copy as-is (same for all trajectories)
                     extracted_value = value
 
                 # Assign to required fields or extra_fields

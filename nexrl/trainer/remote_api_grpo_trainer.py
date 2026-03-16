@@ -105,6 +105,22 @@ class RemoteApiGrpoTrainer(RemoteApiTrainer):
         # Log GRPO statistics
         log_grpo_metrics(trajectories, metrics)
 
+        # Mask truncated responses
+        truncated_count = 0
+        for traj in trajectories:
+            finish_reason = traj.get("finish_reason", "stop")
+            if isinstance(finish_reason, bytes):
+                finish_reason = finish_reason.decode("utf-8", errors="replace")
+            if finish_reason == "length":
+                truncated_count += 1
+                traj.loss_mask = [0] * len(traj.loss_mask)
+
+        if truncated_count > 0:
+            metrics["truncation/count"] = truncated_count
+            metrics["truncation/ratio"] = (
+                truncated_count / len(trajectories) if trajectories else 0.0
+            )
+
         # Compute and log response length statistics
         self._log_response_length_metrics(trajectories, metrics)
 
@@ -135,6 +151,13 @@ class RemoteApiGrpoTrainer(RemoteApiTrainer):
             prompt_length = len(traj.tokens) - response_length
             prompt_lengths.append(prompt_length)
 
+        # response_length_raw: total token count per trajectory (pre-truncation)
+        raw_lengths = [len(traj.tokens) for traj in trajectories]
+        if raw_lengths:
+            metrics["response_length_raw/mean"] = float(np.mean(raw_lengths))
+            metrics["response_length_raw/max"] = float(np.max(raw_lengths))
+            metrics["response_length_raw/min"] = float(np.min(raw_lengths))
+
         if response_lengths:
             # Response length metrics
             metrics["response_length/mean"] = float(np.mean(response_lengths))
@@ -158,3 +181,16 @@ class RemoteApiGrpoTrainer(RemoteApiTrainer):
             metrics["prompt_length/clip_ratio"] = float(
                 np.mean([1.0 if p == max_prompt_length else 0.0 for p in prompt_lengths])
             )
+
+        # PPL metrics from logprobs
+        ppl_values = []
+        for traj in trajectories:
+            logprobs = traj.get("logprobs")
+            if logprobs is not None:
+                response_logprobs = [lp for lp, m in zip(logprobs, traj.loss_mask) if m > 0]
+                if response_logprobs:
+                    avg_log_prob = np.mean(response_logprobs)
+                    ppl_values.append(np.exp(-avg_log_prob))
+
+        if ppl_values:
+            metrics["ppl/mean"] = float(np.mean(ppl_values))

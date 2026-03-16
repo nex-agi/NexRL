@@ -72,14 +72,19 @@ class FixedKLController:
 
 
 def kl_penalty(
-    logprob: torch.Tensor, ref_logprob: torch.Tensor, kl_penalty_type: str = "kl"
+    logprob: torch.Tensor,
+    ref_logprob: torch.Tensor,
+    kl_penalty_type: str = "kl",
+    old_logprob: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute KL divergence given logprob and ref_logprob.
 
     Args:
         logprob: Current policy log probabilities
         ref_logprob: Reference policy log probabilities
-        kl_penalty_type: Type of KL penalty ('kl', 'abs', 'mse', 'low_var_kl')
+        kl_penalty_type: Type of KL penalty ('kl', 'abs', 'mse', 'low_var_kl',
+                         'unbiased_k3_estimate')
+        old_logprob: Old policy log probabilities (required for 'unbiased_k3_estimate')
 
     Returns:
         KL divergence tensor
@@ -98,6 +103,17 @@ def kl_penalty(
         kl = torch.clamp(kl, min=-5, max=5)
         ratio = torch.exp(kl)
         kld = (ratio - kl - 1).contiguous()
+        return torch.clamp(kld, min=-10, max=10)
+
+    if kl_penalty_type == "unbiased_k3_estimate":
+        if old_logprob is None:
+            raise ValueError("old_logprob must be provided for unbiased_k3_estimate")
+        kl = ref_logprob - logprob
+        kl = torch.clamp(kl, min=-5, max=5)
+        ratio = torch.exp(kl)
+        importance_log_ratio = torch.clamp(logprob - old_logprob, min=-5, max=5)
+        importance_weight = torch.exp(importance_log_ratio)
+        kld = importance_weight * (ratio - kl - 1).contiguous()
         return torch.clamp(kld, min=-10, max=10)
 
     raise NotImplementedError(f"KL penalty type {kl_penalty_type} not implemented")
