@@ -67,7 +67,29 @@ class DataParallelPPOActor:
 
         if role == "actor":
             self.loss_func_type = self.config.loss_func_type
-            assert self.loss_func_type in ["NX_20250515", "NX_20241031", "importance_sampling"]
+            assert self.loss_func_type in [
+                "NX_20250515",
+                "NX_20241031",
+                "importance_sampling",
+                "SCGRPO",
+                "scgrpo",
+                "sapo",
+                "grpo_clip",
+                "grpo_mask",
+                "gspo",
+                "mgspo",
+                "grpo_min_max",
+                "eb_grpo",
+                "eb-grpo",
+                "fix_advantage",
+                "lbpo",
+                "bapo",
+                "bapo_mask",
+                "ce-gppo",
+                "ce_gppo_mask",
+                "icepop",
+                "sscr_icepop",
+            ]
 
             self.do_old_log_prob_compute = self.config.do_old_log_prob_compute
             clip_ratio = self.config.clip_ratio
@@ -82,6 +104,26 @@ class DataParallelPPOActor:
             clip_ratio_c = self.config.get("clip_ratio_c", 3.0)
             loss_agg_mode = self.config.loss_agg_mode
 
+            lbpo_alpha = getattr(self.config, "lbpo_alpha", None)
+
+            ce_gppo_cfg = getattr(self.config, "ce_gppo", None)
+            ce_gppo_beta1 = 1.0
+            ce_gppo_beta2 = 1.0
+            if ce_gppo_cfg is not None:
+                ce_gppo_beta1 = ce_gppo_cfg.get("beta1", 1.0)
+                ce_gppo_beta2 = ce_gppo_cfg.get("beta2", 1.0)
+
+            bapo_cfg = getattr(self.config, "bapo", None)
+            icepop_cfg = getattr(self.config, "icepop", None)
+            scgrpo_cfg = getattr(self.config, "scgrpo", None)
+            sapo_cfg = getattr(self.config, "sapo", None)
+
+            # GRPO mask parameters
+            if hasattr(self.config, "grpo_mask") and self.config.grpo_mask is not None:
+                adv_mask_delta = self.config.grpo_mask.get("adv_mask_delta", 0.05)
+            else:
+                adv_mask_delta = 0.05
+
             self.compute_policy_loss_impl = partial(
                 core_algos.compute_policy_loss_impl,
                 loss_func_type=self.loss_func_type,
@@ -91,6 +133,14 @@ class DataParallelPPOActor:
                 clip_ratio_c=clip_ratio_c,
                 loss_agg_mode=loss_agg_mode,
                 do_old_log_prob_compute=self.do_old_log_prob_compute,
+                adv_mask_delta=adv_mask_delta,
+                lbpo_alpha=lbpo_alpha,
+                ce_gppo_beta1=ce_gppo_beta1,
+                ce_gppo_beta2=ce_gppo_beta2,
+                bapo_cfg=bapo_cfg,
+                icepop_cfg=icepop_cfg,
+                scgrpo_cfg=scgrpo_cfg,
+                sapo_cfg=sapo_cfg,
             )
 
         # Initialize data dumper for debug data collection (reads from config.debug)
@@ -724,9 +774,11 @@ class DataParallelPPOActor:
                         micro_idx=micro_idx,
                     )
 
-                    pg_loss, loss_metrics = self.compute_policy_loss_impl(
+                    pg_loss, loss_metrics, mask_dict = self.compute_policy_loss_impl(
                         log_prob, micro_batch_data
                     )
+
+                    fsdp_ppl = torch.exp(-masked_mean(log_prob, response_mask))
 
                     # compute entropy loss from entropy
                     entropy_loss = nx_utils.masked_mean(entropy, response_mask)
@@ -738,24 +790,48 @@ class DataParallelPPOActor:
                     # compute policy loss
                     policy_loss = pg_loss - entropy_loss * entropy_coeff
 
-                    if self.config.use_kl_loss:
-                        ref_log_prob = micro_batch_data["ref_log_prob"]
-                        # compute kl loss
-                        kld = core_algos.kl_penalty(
-                            logprob=log_prob,
-                            ref_logprob=ref_log_prob,
-                            kl_penalty=self.config.kl_loss_type,
-                        )
-                        kl_loss = masked_mean(kld, response_mask)
+                    # KL loss computation — support both ref_log_prob and ref_log_probs keys
+                    ref_key = None
+                    if "ref_log_probs" in micro_batch_data:
+                        ref_key = "ref_log_probs"
+                    elif "ref_log_prob" in micro_batch_data:
+                        ref_key = "ref_log_prob"
 
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
-                        metrics["actor/kl_loss"] = kl_loss.detach().item()
-                        metrics["actor/kl_loss_coef"] = self.config.kl_loss_coef
+                    if ref_key is not None:
+                        ref_log_probs_tensor = micro_batch_data[ref_key]
+                        old_logprob = None
+                        if self.config.kl_loss_type == "unbiased_k3_estimate":
+                            if "old_log_probs" not in micro_batch_data:
+                                with torch.no_grad():
+                                    kl_loss = masked_mean(0, response_mask)
+                            else:
+                                old_logprob = micro_batch_data["old_log_probs"]
+                                kld = core_algos.kl_penalty(
+                                    logprob=log_prob,
+                                    ref_logprob=ref_log_probs_tensor,
+                                    kl_penalty_type=self.config.kl_loss_type,
+                                    old_logprob=old_logprob,
+                                )
+                                kl_loss = masked_mean(kld, response_mask)
+                        else:
+                            if "old_log_probs" in micro_batch_data:
+                                old_logprob = micro_batch_data["old_log_probs"]
+                            kld = core_algos.kl_penalty(
+                                logprob=log_prob,
+                                ref_logprob=ref_log_probs_tensor,
+                                kl_penalty_type=self.config.kl_loss_type,
+                                old_logprob=old_logprob,
+                            )
+                            kl_loss = masked_mean(kld, response_mask)
                     else:
                         with torch.no_grad():
                             kl_loss = masked_mean(0, response_mask)
-                        metrics["actor/kl_loss"] = kl_loss.detach().item()
-                        metrics["actor/kl_loss_coef"] = self.config.kl_loss_coef
+
+                    if self.config.use_kl_loss:
+                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+
+                    metrics["actor/kl_loss"] = kl_loss.detach().item()
+                    metrics["actor/kl_loss_coef"] = self.config.kl_loss_coef
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz
@@ -772,6 +848,7 @@ class DataParallelPPOActor:
                         "actor/entropy_loss": entropy_loss.detach().item(),
                         "actor/first_1000_entropy_loss": first_1000_entropy_loss.detach().item(),
                         "actor/last_1000_entropy_loss": last_1000_entropy_loss.detach().item(),
+                        "actor/fsdp-ppl": fsdp_ppl.detach().item(),
                     }
                     loss_data.update(loss_metrics)
                     append_to_dict(metrics, loss_data)
