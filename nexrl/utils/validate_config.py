@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
+
 from omegaconf import DictConfig
 
 from nexrl.utils.config_utils import get_actor_train_service_config
@@ -44,13 +46,44 @@ def validate_config(config: DictConfig) -> None:
         config.data.batch_size <= config.trajectory_pool.batch_size
     ), "batch_size in dataloader must be less than or equal to trajectory_pool.batch_size"
 
-    assert config.data.keep_batch_order == (
-        config.weight.sync_mode in ["sync", "batch-async"]
-    ), "keep_batch_order must be true when sync_mode is sync or batch-async"
+    if config.weight.sync_mode == "no-sync":
+        # "no-sync" mode: no weight sync cycle, keep_batch_order is allowed but not required
+        if config.data.keep_batch_order:
+            assert config.trajectory_pool.check_batch_ready_function in [
+                "loaded_batch_finished",
+                "batch_size_reached_and_loaded_batch_finished",
+            ], "check_batch_ready_function must contain loaded_batch_finished when keep_batch_order is true"
 
-    assert (
-        config.data.max_response_length == config.service.inference_service.max_tokens
-    ), "max_response_length must be equal to max_tokens"
+        assert config.trainer.get(
+            "skip_weight_sync", False
+        ), "trainer.skip_weight_sync must be true when sync_mode is 'no-sync'"
+
+        if config.weight.sync_method != "mock":
+            warnings.warn(
+                f"weight.sync_method is '{config.weight.sync_method}' but sync_mode is 'no-sync'. "
+                "Consider setting sync_method to 'mock' since no weight sync will occur.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        if config.rollout_worker.get("need_llm_inference", True):
+            warnings.warn(
+                "sync_mode is 'no-sync' but rollout_worker.need_llm_inference is true. "
+                "The inference service will use stale (initial) weights throughout training. "
+                "If this is unintended, set need_llm_inference to false (for SFT) "
+                "or use a different sync_mode.",
+                UserWarning,
+                stacklevel=2,
+            )
+    else:
+        assert config.data.keep_batch_order == (
+            config.weight.sync_mode in ["sync", "batch-async"]
+        ), "keep_batch_order must be true when sync_mode is sync or batch-async"
+
+    if config.data.get("max_response_length") is not None:
+        assert (
+            config.data.max_response_length == config.service.inference_service.max_tokens
+        ), "max_response_length must be equal to max_tokens"
 
     # Validate max_sequence_length in rollout_worker
     max_sequence_length = config.rollout_worker.get("max_sequence_length", None)
@@ -69,8 +102,6 @@ def validate_config(config: DictConfig) -> None:
     )
 
     # Validate inference_service has identifier (with backward compatibility for model_tag)
-    import warnings
-
     identifier = config.service.inference_service.get("identifier")
     model_tag = config.service.inference_service.get("model_tag")
 

@@ -58,12 +58,25 @@ rollout_worker:
   max_response_length: ${data.max_response_length}
 ```
 
+### SFTRolloutWorker (`type: "sft"`)
+
+Pass-through worker for supervised fine-tuning. No LLM inference — simply converts
+pre-tokenized data from StreamingDatasetDataLoader into Trajectories.
+
+```yaml
+rollout_worker:
+  type: "sft"
+  num_workers: 1
+  need_llm_inference: false
+  identifier: "default"
+```
+
 ## Configuration Options
 
 ### type
 
 **Type:** `string`
-**Options:** `"simple"`, `"agent"`, `"nexau"`, `"mock"`
+**Options:** `"simple"`, `"agent"`, `"nexau"`, `"sft"`, `"mock"`
 **Default:** Required
 
 Rollout worker implementation.
@@ -71,6 +84,7 @@ Rollout worker implementation.
 - `simple`: Basic LLM completion
 - `agent`: Multi-turn agent with tools
 - `nexau`: NexAU-based agent framework
+- `sft`: Pass-through for SFT (no inference)
 - `mock`: Mock worker for testing
 
 ### num_workers

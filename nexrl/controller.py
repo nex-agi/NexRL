@@ -27,7 +27,7 @@ import ray
 from omegaconf import DictConfig
 
 from .activity_tracker import ActivityTracker, ActivityTrackerProxy
-from .data_loader import BaseDataLoader, TorchDataLoader
+from .data_loader import BaseDataLoader, StreamingDatasetDataLoader, TorchDataLoader
 from .executor import execute
 from .mock.mock_data_loader import MockDataLoader
 from .mock.mock_rollout_worker import MockRolloutWorker
@@ -38,6 +38,7 @@ from .rollout_worker import (
     BaseRolloutWorker,
     DefaultNexAURolloutWorker,
     PigLatinRolloutWorker,
+    SFTRolloutWorker,
     SimpleRolloutWorker,
 )
 from .trainer import BaseTrainer
@@ -633,6 +634,7 @@ class NexRLController:
             NexRLRole.DATA_LOADER: {
                 "mock": MockDataLoader,
                 "torch": TorchDataLoader,
+                "streaming_dataset": StreamingDatasetDataLoader,
             },
             NexRLRole.ROLLOUT_WORKER: {
                 "mock": MockRolloutWorker,
@@ -640,6 +642,7 @@ class NexRLController:
                 "agent": AgentRolloutWorker,
                 "pig_latin": PigLatinRolloutWorker,
                 "nexau": DefaultNexAURolloutWorker,  # Default NexAU worker with self-contained implementation
+                "sft": SFTRolloutWorker,
                 # Note: Custom workers use type="nexau" + custom_rollout_worker_module_path
             },
             NexRLRole.TRAINER: {
@@ -658,6 +661,7 @@ class NexRLController:
             NexRLRole.VALIDATE_DATALOADER: {
                 "mock": MockDataLoader,
                 "torch": TorchDataLoader,
+                "streaming_dataset": StreamingDatasetDataLoader,
             },
             NexRLRole.VALIDATOR: {
                 "default": Validator,
@@ -1112,6 +1116,9 @@ class NexRLController:
 
         training_mode = weaver_config.get("training_mode", "lora")
 
+        # Skip sampler provisioning when no LLM inference is needed (e.g. SFT)
+        need_sampling = self._config.rollout_worker.get("need_llm_inference", True)
+
         logger.info(f"Initializing WeaverServiceHolder: base_model={base_model}, rank={lora_rank}")
 
         if self._launch_mode == "local":
@@ -1121,6 +1128,7 @@ class NexRLController:
                 base_url=base_url,
                 tokenizer_path=tokenizer_path,
                 training_mode=training_mode,
+                need_sampling=need_sampling,
             )
         elif self._launch_mode == "ray":
             env_vars = _get_minimal_env_vars()
@@ -1135,6 +1143,7 @@ class NexRLController:
                 lora_rank=lora_rank,
                 base_url=base_url,
                 training_mode=training_mode,
+                need_sampling=need_sampling,
             )
             if hasattr(self._weaver_service_holder, "__ray_ready__"):
                 try:

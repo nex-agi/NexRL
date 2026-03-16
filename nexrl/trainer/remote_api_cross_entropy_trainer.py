@@ -22,6 +22,7 @@ from typing import Any
 from omegaconf import DictConfig
 
 from ..nexrl_types import Trajectory
+from ..utils.finetune_service_utils import convert_trajectories_to_datums_cross_entropy
 from .remote_api_trainer import RemoteApiTrainer
 
 logger = logging.getLogger(__name__)
@@ -72,3 +73,12 @@ class RemoteApiCrossEntropyTrainer(RemoteApiTrainer):
             Trajectories unchanged (no preparation needed for cross entropy)
         """
         return trajectories
+
+    def _convert_to_datums(self, trajectories: list[Trajectory]) -> list[dict]:
+        """
+        Convert trajectories to datums for cross-entropy loss.
+
+        Uses the minimal SFT protocol (target_tokens + loss_mask only,
+        no logprobs or advantages).
+        """
+        return convert_trajectories_to_datums_cross_entropy(trajectories)

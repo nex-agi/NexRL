@@ -130,6 +130,9 @@ class WeightSyncController(NexRLModule):
         self._trajectory_pool = trajectory_pool
         self._dataloader = dataloader
 
+        if self._sync_mode == "no-sync":
+            execute(self._dataloader.set_skip_weight_sync_lock, True)
+
     def set_tinker_service_holder(self, tinker_service_holder: "TinkerServiceHolder") -> None:
         """Set reference to Tinker service holder (for Tinker backend only)"""
         self._tinker_service_holder = tinker_service_holder
@@ -215,6 +218,12 @@ class WeightSyncController(NexRLModule):
 
         rollout_service = self._rollout_services[model_tag]
 
+        if self._sync_mode == "no-sync":
+            # No weight sync: immediately unlock without state machine processing
+            execute(self._dataloader.unlock_for_weight_sync)
+            execute(self._trajectory_pool.unlock_for_weight_sync, model_tag)
+            return
+
         logger.info(f"Trajectory pool batch ready for {model_tag}, sync mode: {self._sync_mode}")
 
         with rollout_service._lock:  # pylint: disable=protected-access
@@ -256,6 +265,9 @@ class WeightSyncController(NexRLModule):
             worker_name: Name of the training worker
             model_tag: Model tag that was trained
         """
+        if self._sync_mode == "no-sync":
+            return
+
         assert (
             model_tag in self._rollout_services
         ), f"Rollout service not found for model tag: {model_tag}"

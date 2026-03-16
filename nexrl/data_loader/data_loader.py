@@ -120,6 +120,12 @@ class BaseDataLoader(NexRLModule, ABC):
         Skip the first num_batches batches from the dataloader.
         """
 
+    def set_skip_weight_sync_lock(self, skip: bool) -> None:
+        """
+        Set whether to skip weight sync locking in get_next_item().
+        Called by WeightSyncController when sync_mode is "no-sync".
+        """
+
     def set_module_references(self, weight_sync_controller: WeightSyncController):
         """
         Set the weight sync controller for this data loader.
@@ -197,6 +203,7 @@ class SequentialDataLoader(BaseDataLoader, ABC):
 
         # Batch order control
         self._keep_batch_order: bool = config.get("keep_batch_order", False)
+        self._skip_weight_sync_lock: bool = False
 
         if self._is_validate:
             self._keep_batch_order = False
@@ -242,12 +249,13 @@ class SequentialDataLoader(BaseDataLoader, ABC):
                     if not fetch_success:
                         return None
                 else:
-                    # Need to wait for weight sync
+                    # Need to wait for weight sync (or no-sync unlock)
                     if not self._lock_for_weight_sync_event.is_set():
                         # First time buffer exhausted, set the lock
-                        logger.info(
-                            "SequentialDataLoader: Buffer exhausted, locking for weight sync"
-                        )
+                        if not self._skip_weight_sync_lock:
+                            logger.info(
+                                "SequentialDataLoader: Buffer exhausted, locking for weight sync"
+                            )
                         self._lock_for_weight_sync_event.set()
                     else:
                         # Lock already set, continue waiting
@@ -261,6 +269,11 @@ class SequentialDataLoader(BaseDataLoader, ABC):
             return item
 
     @override
+    def set_skip_weight_sync_lock(self, skip: bool) -> None:
+        """Set whether to skip weight sync locking in get_next_item()."""
+        self._skip_weight_sync_lock = skip
+
+    @override
     def unlock_for_weight_sync(self) -> None:
         """
         Release the batch order lock, allowing the next batch to be fetched
@@ -269,7 +282,8 @@ class SequentialDataLoader(BaseDataLoader, ABC):
         by downstream components.
         """
         with self._lock:
-            logger.info("SequentialDataLoader: Unlocking for weight sync")
+            if not self._skip_weight_sync_lock:
+                logger.info("SequentialDataLoader: Unlocking for weight sync")
             self._lock_for_weight_sync_event.clear()
             # Fetch next batch if buffer is exhausted and keep_batch_order is enabled
             if self._keep_batch_order and self._buffer_index >= len(self._data_buffer):

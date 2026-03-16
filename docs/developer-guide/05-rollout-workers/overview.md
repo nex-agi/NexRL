@@ -26,6 +26,7 @@ BaseRolloutWorker (abstract)
     ↓
     ├── SimpleRolloutWorker (basic LLM completion)
     ├── AgentRolloutWorker (multi-turn with tools)
+    ├── SFTRolloutWorker (pass-through for SFT)
     └── BaseNexAURolloutWorker (agent framework)
             ↓
         Custom Workers (task-specific)
@@ -42,6 +43,12 @@ BaseRolloutWorker (abstract)
 - **Use case**: Multi-turn conversations with tool calling
 - **Features**: Message history, tool calls, stateful interactions
 - **Example**: Conversational agents, complex reasoning
+
+### SFTRolloutWorker
+- **Use case**: Supervised fine-tuning with pre-tokenized data
+- **Features**: No LLM inference — converts pre-tokenized data to Trajectories
+- **Example**: SFT with StreamingDatasetDataLoader, packed sequence training
+- **Data flow**: `{"input_ids", "labels"} → Trajectory(tokens, loss_mask, reward=0.0)`
 
 ### BaseNexAURolloutWorker
 - **Use case**: Complex agent tasks with NexAU framework
