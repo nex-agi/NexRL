@@ -321,3 +321,135 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         }
 
         return {**openai_like, **kwargs}
+
+    def generate_with_token(
+        self,
+        input_ids: list[int],
+        sampling_params: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Call LLM inference using token IDs via the service holder.
+
+        Returns the same OpenAI-style format as generate(), including
+        reasoning/tool parsing.
+
+        Args:
+            input_ids: Input token IDs
+            sampling_params: SGLang-style sampling parameters dict
+            **kwargs: Top-level SGLang parameters (largely ignored for Weaver/Tinker)
+
+        Returns:
+            dict[str, Any]: OpenAI-style response with nexrl_train attached
+        """
+        assert self._service_holder is not None, "ServiceHolder not set"
+
+        if self._freeze_for_weight_sync:
+            self._wait_for_weight_sync()
+
+        if sampling_params is None:
+            sampling_params = {}
+
+        max_tokens = sampling_params.get(
+            "max_new_tokens", self._config.inference_service.max_tokens
+        )
+        temperature = sampling_params.get("temperature", self._config.temperature)
+        stop = sampling_params.get("stop", None)
+
+        result = execute(
+            self._service_holder.sample_from_token_ids,
+            input_ids=input_ids,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            num_samples=1,
+            stop=stop,
+        )
+
+        if "is_valid" in result:
+            if not result["is_valid"]:
+                logger.warning(
+                    f"Response parsing indicated invalid format: {result['response'][:100]}..."
+                )
+            else:
+                logger.debug(f"Response is valid: {result['response'][:100]}...")
+
+        prompt_tokens: list[int] = result["prompt_tokens"]
+        response_tokens: list[int] = result["response_tokens"]
+        response_logprobs: list[float] = result["response_logprobs"]
+        tool_string: str | None = result.get("tool_string")
+        reasoning_string: str | None = result.get("reasoning_string")
+
+        response_content = result["response"]
+        reasoning_content = None
+
+        if reasoning_string:
+            reasoning_result = self._reasoning_parser.parse(reasoning_string)
+            if reasoning_result.is_valid:
+                reasoning_content = reasoning_result.reasoning_content
+                logger.debug(
+                    f"Extracted reasoning: {reasoning_content[:100] if reasoning_content else 'None'}..."
+                )
+            elif not reasoning_result.is_valid:
+                logger.warning("Failed to parse reasoning content")
+        tools = kwargs.get("tools", [])
+        tool_calls = None
+        if tool_string:
+            parse_result = self._tool_parser.parse(tool_string, tools=tools)
+            if parse_result.is_valid and parse_result.tool_calls:
+                tool_calls = []
+                for tc in parse_result.tool_calls:
+                    function = dict(tc.function)
+                    if "arguments" in function and isinstance(function["arguments"], dict):
+                        function["arguments"] = json.dumps(function["arguments"])
+                    elif "arguments" not in function:
+                        function["arguments"] = "{}"
+
+                    tool_calls.append(
+                        {
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": function,
+                        }
+                    )
+
+                logger.debug(f"Parsed tool calls: {json.dumps(tool_calls, indent=2)}")
+            elif not parse_result.is_valid:
+                logger.warning(f"Failed to parse tool call from: {tool_string[:100]}...")
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": response_content,
+        }
+
+        if reasoning_content:
+            message["reasoning_content"] = reasoning_content
+
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        openai_like = {
+            "id": self._make_id("chatcmpl"),
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": self._config.inference_service.get("model", "remote-api"),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": result["finish_reason"],
+                    "logprobs": None,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(prompt_tokens),
+                "completion_tokens": len(response_tokens),
+                "total_tokens": len(prompt_tokens) + len(response_tokens),
+            },
+            "nexrl_train": {
+                "prompt_tokens": prompt_tokens,
+                "response_tokens": response_tokens,
+                "response_logprobs": response_logprobs,
+            },
+        }
+
+        return openai_like

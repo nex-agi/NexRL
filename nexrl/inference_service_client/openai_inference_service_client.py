@@ -25,8 +25,11 @@ from copy import deepcopy
 from typing import Any
 
 import openai
+import requests as http_requests
 from omegaconf import DictConfig
 
+from ..utils.reasoning_parser import create_reasoning_parser
+from ..utils.tool_parser import create_tool_parser
 from ..utils.url_utils import ensure_url_scheme
 from .base_inference_service_client import InferenceServiceClient, hf_tokenizer
 
@@ -105,14 +108,26 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
             "parse_tool_call_arguments", False
         )
 
+        # Initialize tool parser based on config
+        parser_type = config.inference_service.get("tool_parser", "qwen25")
+        try:
+            self._tool_parser = create_tool_parser(parser_type)
+        except ValueError as e:
+            logger.warning(f"Failed to create tool parser: {e}. Using qwen25 as fallback.")
+            self._tool_parser = create_tool_parser("qwen25")
+
+        # Initialize reasoning parser based on config
+        reasoning_parser_type = config.inference_service.get("reasoning_parser", "think_tag")
+        self._reasoning_parser = create_reasoning_parser(reasoning_parser_type)
+
         # Initialize OpenAI client based on config
         # Ensure base_url has proper http:// scheme
-        base_url = ensure_url_scheme(config.inference_service.base_url)
-        if not base_url:
+        self._base_url = ensure_url_scheme(config.inference_service.base_url)
+        if not self._base_url:
             raise ValueError("base_url is required for OpenAI inference service")
         self._oai_llm = openai.OpenAI(
             api_key=config.inference_service.api_key,
-            base_url=base_url + "/v1",
+            base_url=self._base_url + "/v1",
             timeout=1000,
         )
 
@@ -387,3 +402,197 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
             },
         }
         return out
+
+    def generate_with_token(
+        self,
+        input_ids: list[int],
+        sampling_params: dict[str, Any] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """
+        Call LLM inference via SGLang's native /generate endpoint using token IDs.
+
+        Args:
+            input_ids: Input token IDs
+            sampling_params: SGLang-style sampling parameters dict
+            **kwargs: Top-level SGLang parameters (model, return_logprob, etc.)
+
+        Returns:
+            dict[str, Any]: OpenAI-style chat completion response with nexrl_train attached
+        """
+        if self._freeze_for_weight_sync:
+            self._wait_for_weight_sync()
+
+        # Default return_logprob to True for nexrl_train
+        if "return_logprob" not in kwargs:
+            kwargs["return_logprob"] = True
+        if kwargs.get("return_logprob") and "logprob_start_len" not in kwargs:
+            kwargs["logprob_start_len"] = -1
+
+        # Apply config defaults to sampling_params
+        if sampling_params is None:
+            sampling_params = {}
+        sampling_params.setdefault("max_new_tokens", self._config.inference_service.max_tokens)
+        sampling_params.setdefault("temperature", self._config.temperature)
+
+        body: dict[str, Any] = {
+            "input_ids": input_ids,
+            "sampling_params": sampling_params,
+            **kwargs,
+        }
+
+        max_retries = self._config.inference_service.max_retries
+        response_payload: dict[str, Any] | None = None
+
+        for attempt in range(max_retries):
+            try:
+                resp = http_requests.post(
+                    f"{self._base_url}/generate",
+                    json=body,
+                    timeout=1000,
+                )
+                resp.raise_for_status()
+                response_payload = resp.json()
+                break
+            except Exception as e:
+                logger.error(f"Error in generate_with_token (attempt {attempt + 1}): {e}")
+                time.sleep(1)
+                continue
+
+        if response_payload is None:
+            raise ValueError("Failed to get response from /generate after all retries")
+
+        # Extract output token IDs
+        output_token_ids: list[int] = response_payload.get(
+            "output_token_ids", response_payload.get("output_ids", [])
+        )
+
+        # Extract logprobs from meta_info if available
+        meta_info: dict[str, Any] = response_payload.get("meta_info", {})
+        response_logprobs: list[float] = []
+        output_token_logprobs = meta_info.get("output_token_logprobs")
+        if output_token_logprobs:
+            for entry in output_token_logprobs:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 1:
+                    response_logprobs.append(float(entry[0]))
+                elif isinstance(entry, (int, float)):
+                    response_logprobs.append(float(entry))
+
+        response_text = response_payload.get("text", "")
+        if response_text is None:
+            response_text = ""
+        elif not isinstance(response_text, str):
+            response_text = str(response_text)
+
+        tool_string: str | None = None
+        reasoning_string: str | None = None
+        response_content = response_text
+
+        if response_text:
+            import re
+
+            if "</think>" in response_text:
+                reasoning_match = re.search(r"^(.*?</think>)", response_text, flags=re.DOTALL)
+                if reasoning_match:
+                    reasoning_string = reasoning_match.group(0)
+                response_content = re.sub(
+                    r"^(<think>)?(.*?)</think>\s*", "", response_text, flags=re.DOTALL
+                )
+
+            tool_call_match = re.search(r"<tool_call>(.*?)</tool_call>", response_text, re.DOTALL)
+            if tool_call_match:
+                tool_string = tool_call_match.group(0)
+
+            if tool_string:
+                response_content = re.sub(
+                    r"<tool_call>.*?</tool_call>\s*", "", response_content, flags=re.DOTALL
+                )
+
+            response_content = response_content.strip()
+
+        reasoning_content = None
+        if reasoning_string:
+            reasoning_result = self._reasoning_parser.parse(reasoning_string)
+            if reasoning_result.is_valid:
+                reasoning_content = reasoning_result.reasoning_content
+                logger.debug(
+                    f"Extracted reasoning: {reasoning_content[:100] if reasoning_content else 'None'}..."
+                )
+            elif not reasoning_result.is_valid:
+                logger.warning("Failed to parse reasoning content")
+
+        tools = kwargs.get("tools", [])
+        tool_calls = None
+        if tool_string:
+            print("type(self._tool_parser):", type(self._tool_parser))
+            print("tools:", tools)
+            parse_result = self._tool_parser.parse(tool_string, tools=tools)
+            print("self._tool_parser.__class__.__name__:", self._tool_parser.__class__.__name__)
+            print(f"parse_result: {parse_result}")
+            if parse_result.is_valid and parse_result.tool_calls:
+                tool_calls = []
+                for tc in parse_result.tool_calls:
+                    function = dict(tc.function)
+                    if "arguments" in function and isinstance(function["arguments"], dict):
+                        function["arguments"] = json.dumps(function["arguments"])
+                    elif "arguments" not in function:
+                        function["arguments"] = "{}"
+
+                    tool_calls.append(
+                        {
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": function,
+                        }
+                    )
+
+                logger.debug(f"Parsed tool calls: {json.dumps(tool_calls, indent=2)}")
+            elif not parse_result.is_valid:
+                logger.warning(f"Failed to parse tool call from: {tool_string[:100]}...")
+
+        finish_reason = response_payload.get("finish_reason", meta_info.get("finish_reason"))
+        if isinstance(finish_reason, dict):
+            finish_reason = (
+                finish_reason.get("type")
+                or finish_reason.get("reason")
+                or finish_reason.get("finish_reason")
+            )
+        if not isinstance(finish_reason, str):
+            finish_reason = "stop"
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": response_content,
+        }
+
+        if reasoning_content:
+            message["reasoning_content"] = reasoning_content
+
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        return {
+            "id": response_payload.get("id", f"chatcmpl-{int(time.time() * 1000)}"),
+            "object": "chat.completion",
+            "text": response_text,
+            "created": int(time.time()),
+            "model": response_payload.get("model", self._config.inference_service.model),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": finish_reason,
+                    "logprobs": None,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(input_ids),
+                "completion_tokens": len(output_token_ids),
+                "total_tokens": len(input_ids) + len(output_token_ids),
+            },
+            "nexrl_train": {
+                "prompt_tokens": list(input_ids),
+                "response_tokens": list(output_token_ids),
+                "response_logprobs": response_logprobs,
+            },
+        }
