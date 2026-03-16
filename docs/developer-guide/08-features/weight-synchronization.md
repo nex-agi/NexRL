@@ -31,9 +31,28 @@ Each model maintains two version numbers:
 
 ## Synchronization Modes
 
-NexRL supports three synchronization modes via `sync_mode` config:
+NexRL supports four synchronization modes via `sync_mode` config:
 
-### 1. sync (Synchronous)
+### 1. no-sync (No Synchronization)
+
+No weight synchronization at all. The weight sync controller immediately unlocks the dataloader and trajectory pool without state machine processing. `train_worker_notify_weight_update()` is a no-op.
+
+**When to use**: Pure SFT or any pipeline where no inference service needs weight updates
+
+**Trade-off**: No weight sync — requires `trainer.skip_weight_sync: true`
+
+```yaml
+weight:
+  sync_mode: "no-sync"
+  sync_method: "mock"
+
+trainer:
+  skip_weight_sync: true
+```
+
+**Note**: `keep_batch_order: true` is fully supported with `no-sync` mode. The dataloader still locks at batch boundaries for batch ordering, but the lock/unlock cycle is lightweight and log messages are suppressed.
+
+### 2. sync (Synchronous)
 
 All rollout workers block until weight sync completes after every training step.
 
@@ -42,11 +61,11 @@ All rollout workers block until weight sync completes after every training step.
 **Trade-off**: Lower throughput due to frequent blocking
 
 ```yaml
-weight_sync_controller:
+weight:
   sync_mode: "sync"
 ```
 
-### 2. fully-async (Fully Asynchronous)
+### 3. fully-async (Fully Asynchronous)
 
 No blocking - workers continue with stale weights until sync completes opportunistically.
 
@@ -55,11 +74,11 @@ No blocking - workers continue with stale weights until sync completes opportuni
 **Trade-off**: Workers may use outdated weights for multiple steps
 
 ```yaml
-weight_sync_controller:
+weight:
   sync_mode: "fully-async"
 ```
 
-### 3. batch-async (Batch Asynchronous)
+### 4. batch-async (Batch Asynchronous)
 
 Workers block only when staleness exceeds threshold.
 
@@ -68,7 +87,7 @@ Workers block only when staleness exceeds threshold.
 **Trade-off**: Configurable staleness threshold
 
 ```yaml
-weight_sync_controller:
+weight:
   sync_mode: "batch-async"
   staleness_threshold: 2  # Block if behind by 2+ versions
 ```
@@ -236,7 +255,7 @@ weight_sync_controller:
   type: "weight_sync_controller"
 
   # Synchronization mode
-  sync_mode: "sync"  # "sync" | "fully-async" | "batch-async"
+  sync_mode: "sync"  # "no-sync" | "sync" | "fully-async" | "batch-async"
 
   # Staleness threshold (for batch-async mode)
   staleness_threshold: 2
@@ -258,6 +277,15 @@ weight_sync_controller:
     backend: "sglang"
     base_url: "http://localhost:8000"
 ```
+
+**Validation rules for `sync_mode`:**
+
+| sync_mode | `keep_batch_order` | `trainer.skip_weight_sync` | `sync_method` |
+|-----------|-------------------|---------------------------|---------------|
+| `no-sync` | allowed (not required) | **must** be `true` | recommend `"mock"` |
+| `sync` | **must** be `true` | `false` (default) | any |
+| `batch-async` | **must** be `true` | `false` (default) | any |
+| `fully-async` | **must** be `false` | `false` (default) | any |
 
 ## Integration Example
 

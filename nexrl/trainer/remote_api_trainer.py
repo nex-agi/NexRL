@@ -135,6 +135,21 @@ class RemoteApiTrainer(BaseTrainer):
             Prepared trajectories with computed advantages/rewards
         """
 
+    def _convert_to_datums(self, trajectories: list[Trajectory]) -> list[dict]:
+        """
+        Convert trajectories to the datum format expected by the training service.
+
+        Default implementation uses ``convert_trajectories_to_datums`` (IS loss).
+        Override in derived classes for different loss functions.
+
+        Args:
+            trajectories: Prepared trajectories
+
+        Returns:
+            List of serializable datum dicts
+        """
+        return convert_trajectories_to_datums(trajectories)
+
     def train(self, trajectories: list[Trajectory]) -> dict:
         """
         Train on a list of trajectories.
@@ -175,7 +190,7 @@ class RemoteApiTrainer(BaseTrainer):
             )
 
         # Step 3: Convert to service Datum format
-        datums_data = convert_trajectories_to_datums(trajectories)
+        datums_data = self._convert_to_datums(trajectories)
 
         # Dump datums if enabled (DataDumper)
         if self._data_dumper.should_dump("datums", self._train_step):
@@ -219,21 +234,25 @@ class RemoteApiTrainer(BaseTrainer):
 
         # Step 5: Save weights and update sampling client
         self._step_counter += 1
-        new_sampling_path = execute(
-            self._service_holder.save_weights_for_sampler,
-            name=f"step_{self._step_counter:06d}",
-        )
 
-        # Update sampling client path (actual sync is handled by WeightSyncController)
-        execute(
-            self._service_holder.set_current_sampling_path,
-            new_sampling_path,
-        )
+        if not self._skip_weight_sync:
+            new_sampling_path = execute(
+                self._service_holder.save_weights_for_sampler,
+                name=f"step_{self._step_counter:06d}",
+            )
 
-        logger.info(
-            f"Training step {self._train_step} completed, "
-            f"updated sampling path: {new_sampling_path}"
-        )
+            # Update sampling client path (actual sync is handled by WeightSyncController)
+            execute(
+                self._service_holder.set_current_sampling_path,
+                new_sampling_path,
+            )
+
+            logger.info(
+                f"Training step {self._train_step} completed, "
+                f"updated sampling path: {new_sampling_path}"
+            )
+        else:
+            logger.info(f"Training step {self._train_step} completed (skip_weight_sync=True)")
 
         # Add training metrics
         metrics.update(

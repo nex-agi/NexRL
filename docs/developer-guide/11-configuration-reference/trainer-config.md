@@ -133,6 +133,34 @@ Maximum prompt length for training.
 
 Maximum response length for training.
 
+### skip_weight_sync
+
+**Type:** `bool`
+**Default:** `false`
+
+Skip weight synchronization notifications after each training step.
+
+**When `true`:**
+- No `save_weights_for_sampler` or `set_current_sampling_path` calls
+- No `train_worker_notify_weight_update` to the weight sync controller
+- Used for pure SFT where there is no inference service to update
+
+**When `false`:**
+- Normal weight sync behavior (weights saved and synced to inference service)
+
+**Important:** When `skip_weight_sync: true`, the recipe **must** use `weight.sync_mode: "no-sync"`. In no-sync mode, the weight sync controller immediately unlocks the dataloader and trajectory pool without state machine processing, and `train_worker_notify_weight_update()` is a no-op.
+
+**Example:**
+```yaml
+trainer:
+  type: "remote_api_cross_entropy"
+  skip_weight_sync: true
+
+weight:
+  sync_mode: "no-sync"
+  sync_method: "mock"
+```
+
 ## Self-Hosted Specific Options
 
 ### checkpoint_path
@@ -327,6 +355,11 @@ trainer:
 trainer:
   type: "remote_api_cross_entropy"
   total_train_steps: 100
+  skip_weight_sync: true  # No inference service to update
+
+weight:
+  sync_mode: "no-sync"    # Skip weight sync cycle entirely
+  sync_method: "mock"
 ```
 
 ## Hyperparameter Guidelines

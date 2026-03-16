@@ -98,6 +98,13 @@ class BaseTrainer(NexRLModule):
             self._identifier = identifier or model_tag or "default"
         logger.info(f"Trainer using identifier: {self._identifier}")
 
+        # Skip weight sync for pure SFT (no inference service to update)
+        self._skip_weight_sync: bool = config.get("skip_weight_sync", False)
+        if self._skip_weight_sync:
+            logger.info(
+                "Trainer: skip_weight_sync is enabled — weight sync notifications will be skipped"
+            )
+
         # Timing tracking
         self._batch_count: int = 0
 
@@ -182,11 +189,12 @@ class BaseTrainer(NexRLModule):
 
             # Notify weight sync controller of training completion
             # identifier serves as model_tag for weight sync coordination
-            execute(
-                self._weight_sync_controller.train_worker_notify_weight_update,
-                worker_name=self._module_name,
-                model_tag=self._identifier,
-            )
+            if not self._skip_weight_sync:
+                execute(
+                    self._weight_sync_controller.train_worker_notify_weight_update,
+                    worker_name=self._module_name,
+                    model_tag=self._identifier,
+                )
 
             self._batch_count += 1
 

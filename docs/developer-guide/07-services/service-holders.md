@@ -241,10 +241,18 @@ def __init__(
     lora_rank: int = 32,
     base_url: str | None = None,
     tokenizer_path: str | None = None,
+    training_mode: str = "lora",
+    need_sampling: bool = True,
 )
 ```
 
-**Similar to TinkerServiceHolder but uses Weaver SDK.**
+**Parameters:**
+- `base_model`: Base model name for training
+- `lora_rank`: LoRA rank for fine-tuning
+- `base_url`: Weaver service URL
+- `tokenizer_path`: Custom tokenizer path (uses training client if None)
+- `training_mode`: Training mode (`"lora"` or `"full_ft"`)
+- `need_sampling`: Whether to provision a sampling client. When `False`, skips `save_weights_for_sampler` and `create_sampling_client`, reducing initialization from ~10 minutes to <1 second. The controller sets this to `False` when `rollout_worker.need_llm_inference` is `False` (e.g., SFT pipelines).
 
 ### Key Differences from Tinker
 
@@ -268,18 +276,23 @@ self._service_client.connect()
 # 2. Create training client (Weaver model)
 self._training_client = self._service_client.create_model(
     base_model=base_model,
+    training_mode=training_mode,
     lora_config={"rank": lora_rank}
 )
 
-# 3. Get tokenizer from training client
+# 3. Get tokenizer from training client (or custom path)
 self._tokenizer = self._training_client.get_tokenizer()
 
-# 4. Save initial weights and create sampling client
-sampling_path = self._training_client.save_weights_for_sampler(name="initial")
-self._sampling_client = self._service_client.create_sampling_client(
-    model_path=sampling_path,
-    base_model=base_model
-)
+# 4. Save initial weights and create sampling client (only if need_sampling=True)
+if need_sampling:
+    sampling_path = self._training_client.save_weights_for_sampler(name="initial")
+    self._sampling_client = self._service_client.create_sampling_client(
+        model_path=sampling_path,
+        base_model=base_model
+    )
+else:
+    # SFT mode: skip sampler provisioning (~10 min saved)
+    self._sampling_client = None
 ```
 
 ## Usage in NexRL Components
@@ -331,6 +344,8 @@ class RemoteApiTrainer(BaseTrainer):
 
 ```python
 # Controller creates and distributes service holder
+need_sampling = config.rollout_worker.get("need_llm_inference", True)
+
 if backend == "tinker":
     service_holder = TinkerServiceHolder(
         base_model=config.model,
@@ -341,7 +356,8 @@ elif backend == "weaver":
     service_holder = WeaverServiceHolder(
         base_model=config.model,
         lora_rank=config.lora_rank,
-        base_url=config.base_url
+        base_url=config.base_url,
+        need_sampling=need_sampling,  # False for SFT
     )
 
 # Set service holder for inference and training

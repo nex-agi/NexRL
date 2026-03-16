@@ -212,6 +212,58 @@ def reset(self):
     # Reload data from files
 ```
 
+## StreamingDatasetDataLoader
+
+**Location**: `nexrl/data_loader/streaming_dataset_data_loader.py`
+
+**Concrete implementation** using the StreamingDataset package for pre-tokenized, packed SFT data.
+
+### Features
+
+- Wraps the StreamingDataset API for pre-tokenized packed sequences
+- Returns `{"input_ids": list[int], "labels": list[int]}` per sample
+- Integrates with the SFT pipeline (no LLM inference needed)
+- Supports SFT-specific tokenizer wrappers (e.g., `sft_multi_round`)
+
+### Constructor
+
+```python
+def __init__(self, config: DictConfig, is_validate: bool = False)
+```
+
+**Configuration**:
+
+```yaml
+data:
+  type: "streaming_dataset"
+  seed: 42
+  batch_size: 8
+
+  train_folder: "/path/to/sft/data"
+  vocab_file: "/path/to/tokenizer"
+  streaming_tokenizer_type: "HF"
+  tokenizer_wrapper: "sft_multi_round"
+  break_mode: "pass_through"
+  packed_length: 2048
+  max_length_per_sample: 2048
+  min_length: 0
+  num_worker: 4
+  micro_num: 1
+  subset_params: {}
+  total_steps: 20
+
+  rollout_repeat_n: 1
+  keep_batch_order: true
+```
+
+### Data Flow
+
+The StreamingDataset returns batches as `(inputs_dict, labels_tensor)` where:
+- `inputs_dict["input_ids"]`: tensor of shape `[micro_num, packed_length]`
+- `labels_tensor`: tensor of shape `[micro_num, packed_length]` (-100 for ignored tokens)
+
+`_fetch_batch_data()` splits these into individual dicts for the SequentialDataLoader buffer.
+
 ## Mock DataLoader
 
 **Location**: `nexrl/mock/mock_data_loader.py`

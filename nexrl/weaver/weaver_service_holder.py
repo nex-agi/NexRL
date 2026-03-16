@@ -51,6 +51,7 @@ class WeaverServiceHolder:
         base_url: str | None = None,
         tokenizer_path: str | None = None,
         training_mode: str = "lora",
+        need_sampling: bool = True,
     ):
         assert ServiceClient is not None, "weaver package not installed"
         assert types is not None, "weaver package not installed"
@@ -87,17 +88,25 @@ class WeaverServiceHolder:
 
             self._tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
-        # Save initial weights and create sampling client
-        logger.info("Saving initial weights for sampler")
-        sampling_path = self._training_client.save_weights_for_sampler(name="initial")
-        self._current_sampling_path = sampling_path
+        # Save initial weights and create sampling client (only if inference is needed)
+        self._current_sampling_path: str = ""
+        self._sampling_client = None
 
-        logger.info(f"Creating initial sampling client from path: {self._current_sampling_path}")
-        self._sampling_client = self._service_client.create_sampling_client(
-            model_path=self._current_sampling_path,
-            base_model=self._base_model,
-            model_id=getattr(self._training_client, "model_id", None),
-        )
+        if need_sampling:
+            logger.info("Saving initial weights for sampler")
+            sampling_path = self._training_client.save_weights_for_sampler(name="initial")
+            self._current_sampling_path = sampling_path
+
+            logger.info(
+                f"Creating initial sampling client from path: {self._current_sampling_path}"
+            )
+            self._sampling_client = self._service_client.create_sampling_client(
+                model_path=self._current_sampling_path,
+                base_model=self._base_model,
+                model_id=getattr(self._training_client, "model_id", None),
+            )
+        else:
+            logger.info("Skipping sampler provisioning (need_sampling=False)")
 
         logger.info("Initialized WeaverServiceHolder")
 
@@ -198,6 +207,9 @@ class WeaverServiceHolder:
             stop=stop or [],
         )
 
+        assert (
+            self._sampling_client is not None
+        ), "Sampling client not initialized (need_sampling=False?)"
         try:
             sample_result = self._sampling_client.sample(
                 prompt=model_input,
@@ -287,6 +299,9 @@ class WeaverServiceHolder:
             stop=stop or [],
         )
 
+        assert (
+            self._sampling_client is not None
+        ), "Sampling client not initialized (need_sampling=False?)"
         sample_result = self._sampling_client.sample(
             prompt=model_input,
             num_samples=num_samples,
@@ -318,6 +333,9 @@ class WeaverServiceHolder:
     def compute_logprobs(self, tokens: list[int]) -> list[float | None]:
         from weaver import types as weaver_types
 
+        assert (
+            self._sampling_client is not None
+        ), "Sampling client not initialized (need_sampling=False?)"
         model_input = weaver_types.ModelInput.from_ints(tokens=tokens)
         logprobs = self._sampling_client.compute_logprobs(prompt=model_input)
         return list(logprobs) if logprobs else []

@@ -26,6 +26,7 @@ from .base_nexau_rollout_worker import (
 )
 from .base_rollout_worker import BaseRolloutWorker
 from .pig_latin_rollout_worker import PigLatinRolloutWorker
+from .sft_rollout_worker import SFTRolloutWorker
 from .simple_rollout_worker import SimpleRolloutWorker
 
 # Alias for backward compatibility
@@ -34,6 +35,7 @@ DefaultNexAURolloutWorker = BaseNexAURolloutWorker
 __all__ = [
     "BaseRolloutWorker",
     "AgentRolloutWorker",
+    "SFTRolloutWorker",
     "SimpleRolloutWorker",
     "PigLatinRolloutWorker",
     "BaseNexAURolloutWorker",

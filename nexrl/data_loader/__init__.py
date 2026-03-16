@@ -17,10 +17,13 @@ Data Loader module for NexRL framework
 """
 
 from .data_loader import BaseDataLoader, SequentialDataLoader
+from .streaming_dataset_data_loader import StreamingDatasetDataLoader, register_process_func
 from .torch_data_loader import TorchDataLoader
 
 __all__ = [
     "BaseDataLoader",
     "SequentialDataLoader",
+    "StreamingDatasetDataLoader",
     "TorchDataLoader",
+    "register_process_func",
 ]

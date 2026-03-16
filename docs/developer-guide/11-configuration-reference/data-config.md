@@ -37,6 +37,34 @@ data:
   drop_last: true
 ```
 
+### StreamingDatasetDataLoader (`type: "streaming_dataset"`)
+
+Streaming dataset loader for pre-tokenized, packed SFT data.
+
+```yaml
+data:
+  type: "streaming_dataset"
+  seed: 42
+  batch_size: 8
+
+  # StreamingDataset parameters
+  train_folder: "/path/to/sft/data"
+  vocab_file: "/path/to/tokenizer"
+  streaming_tokenizer_type: "HF"
+  tokenizer_wrapper: "sft_multi_round"
+  break_mode: "pass_through"
+  packed_length: 2048
+  max_length_per_sample: 2048
+  min_length: 0
+  num_worker: 4
+  micro_num: 1
+  subset_params: {}
+  total_steps: 20
+
+  rollout_repeat_n: 1
+  keep_batch_order: true
+```
+
 ### MockDataLoader (`type: "mock"`)
 
 Mock data loader for testing.
@@ -53,10 +81,14 @@ data:
 ### type
 
 **Type:** `string`
-**Options:** `"torch"`, `"mock"`
+**Options:** `"torch"`, `"streaming_dataset"`, `"mock"`
 **Default:** Required
 
 Data loader implementation to use.
+
+- `torch`: PyTorch-based loader for parquet/CSV/JSONL files
+- `streaming_dataset`: StreamingDataset loader for pre-tokenized, packed SFT data
+- `mock`: Mock loader for testing
 
 ### seed
 

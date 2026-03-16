@@ -78,3 +78,31 @@ def convert_trajectories_to_datums(trajectories: list[Trajectory]) -> list[dict]
         )
 
     return datums_data
+
+
+def convert_trajectories_to_datums_cross_entropy(trajectories: list[Trajectory]) -> list[dict]:
+    """
+    Convert trajectories to serializable datum dictionaries for cross-entropy loss (SFT).
+
+    Uses a minimal protocol: only ``target_tokens`` and ``loss_mask`` are required —
+    no ``logprobs`` or ``advantages``.
+    """
+    datums_data = []
+    for traj in trajectories:
+        tokens = traj["tokens"]
+        loss_mask = traj["loss_mask"]
+
+        input_tokens = tokens[:-1]
+        target_tokens = tokens[1:]
+        adjusted_loss_mask = loss_mask[1:]
+
+        datum_data = {
+            "input_tokens": input_tokens,
+            "loss_fn_inputs": {
+                "target_tokens": target_tokens,
+                "loss_mask": [int(m) for m in adjusted_loss_mask],
+            },
+        }
+        datums_data.append(datum_data)
+
+    return datums_data

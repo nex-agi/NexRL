@@ -61,7 +61,7 @@ class PigLatinRolloutWorker(BaseRolloutWorker):
         # since we don't use the inference client for generation
         from transformers import AutoTokenizer
 
-        tokenizer_path = self._config.get("tokenizer", self._config.data.tokenizer_path)
+        tokenizer_path = self._config.get("tokenizer") or self._config.data.tokenizer_path
         self._tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
         logger.info(f"Loaded tokenizer from {tokenizer_path}")
 

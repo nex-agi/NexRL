@@ -159,12 +159,12 @@ trainer:
 
 weight:
   type: "default"
-  sync_mode: "sync"  # Options: sync, fully-async, batch-async
+  sync_mode: "sync"  # Options: no-sync, sync, fully-async, batch-async
   staleness_threshold: 0  # For async modes
   validate_freq: ${validate.eval.validate_freq}
 
   # Self-hosted specific
-  sync_method: "disk"  # Options: disk, api
+  sync_method: "disk"  # Options: disk, network, tinker, weaver, mock
   sync_weight_path: ${trainer.sync_weight_path}
 
 #==========================================
