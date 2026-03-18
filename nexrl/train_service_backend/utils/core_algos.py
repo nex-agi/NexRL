@@ -25,12 +25,6 @@ import torch
 from .core_utils import masked_mean
 
 
-def masked_mean(tensor: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    """Compute mean of tensor where mask is True."""
-    masked_tensor = tensor * mask
-    return masked_tensor.sum() / (mask.sum() + eps)
-
-
 def agg_loss(
     loss_mat: torch.Tensor,
     loss_mask: torch.Tensor,
@@ -884,6 +878,7 @@ def compute_policy_loss_lbpo(
     }
 
     if loss_agg_mode == "lbpo":
+        assert lbpo_alpha is not None
         metrics["actor/lbpo_alpha"] = float(lbpo_alpha)
 
     return pg_loss, metrics
@@ -2976,29 +2971,29 @@ def compute_policy_loss_impl(
 def kl_penalty(
     logprob: torch.FloatTensor,
     ref_logprob: torch.FloatTensor,
-    kl_penalty,
+    kl_penalty_type: str = "kl",
     old_logprob: torch.FloatTensor = None,
 ) -> torch.FloatTensor:
     """Compute KL divergence given logprob and ref_logprob."""
-    if kl_penalty == "kl":
+    if kl_penalty_type == "kl":
         return logprob - ref_logprob
 
-    if kl_penalty == "abs":
+    if kl_penalty_type == "abs":
         return (logprob - ref_logprob).abs()
 
-    if kl_penalty == "mse":
+    if kl_penalty_type == "mse":
         return 0.5 * (logprob - ref_logprob).square()
 
     # J. Schulman. Approximating kl divergence, 2020.
     # # URL http://joschu.net/blog/kl-approx.html.
-    if kl_penalty == "low_var_kl":
+    if kl_penalty_type == "low_var_kl":
         kl = ref_logprob - logprob
         kl = torch.clamp(kl, min=-5, max=5)
         ratio = torch.exp(kl)
         kld = (ratio - kl - 1).contiguous()
         return torch.clamp(kld, min=-10, max=10)
 
-    if kl_penalty == "unbiased_k3_estimate":
+    if kl_penalty_type == "unbiased_k3_estimate":
         if old_logprob is None:
             raise ValueError("old_logprob must be provided for unbiased_k3_estimate")
         kl = ref_logprob - logprob
@@ -3009,7 +3004,7 @@ def kl_penalty(
         kld = importance_weight * (ratio - kl - 1).contiguous()
         return torch.clamp(kld, min=-10, max=10)
 
-    if kl_penalty == "full":
+    if kl_penalty_type == "full":
         # so, here logprob and ref_logprob should contain the logits for every token in vocabulary
         raise NotImplementedError
 
