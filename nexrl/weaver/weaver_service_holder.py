@@ -366,6 +366,7 @@ class WeaverServiceHolder:
             stop=stop or [],
         )
 
+        assert self._sampling_client is not None
         sample_result = self._sampling_client.sample(
             prompt=model_input,
             num_samples=num_samples,

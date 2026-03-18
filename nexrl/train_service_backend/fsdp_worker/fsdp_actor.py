@@ -630,7 +630,7 @@ class DataParallelPPOActor:
                     if use_clipping:
                         # Reverse KL with PPO-like clipping
                         reverse_kl_loss, distill_metrics = (
-                            core_algos.compute_reverse_kl_loss_with_clip(
+                            core_algos.compute_reverse_kl_loss_with_clip(  # type: ignore[attr-defined]
                                 student_log_probs=student_log_probs,
                                 old_student_log_probs=old_student_log_probs,
                                 teacher_log_probs=teacher_log_probs,
@@ -650,7 +650,7 @@ class DataParallelPPOActor:
                         )
                     else:
                         # Standard reverse KL loss (OPTIMIZED VERSION - using log_probs)
-                        reverse_kl_loss, distill_metrics = core_algos.compute_reverse_kl_loss(
+                        reverse_kl_loss, distill_metrics = core_algos.compute_reverse_kl_loss(  # type: ignore[attr-defined]
                             student_log_probs=student_log_probs,
                             teacher_log_probs=teacher_log_probs,
                             response_mask=response_mask,

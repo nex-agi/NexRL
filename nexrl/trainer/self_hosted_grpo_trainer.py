@@ -582,7 +582,7 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         Returns:
             Tuple of (batch with masked loss_mask, metrics dict)
         """
-        metrics = {}
+        metrics: dict[str, Any] = {}
         if "finish_reason" not in batch.values:
             return batch, metrics
 
@@ -628,7 +628,7 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         Returns:
             Dictionary of per-prompt rollout length metrics
         """
-        metrics = {}
+        metrics: dict[str, Any] = {}
 
         # Get group IDs
         if "uid" in batch.values:
@@ -854,7 +854,7 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
         dump_dir = os.path.join(os.environ.get("EXPERIMENT_PATH", "/tmp"), "batch_dumps")
         os.makedirs(dump_dir, exist_ok=True)
 
-        dump_data = {
+        dump_data: dict[str, Any] = {
             "values": {},
             "metadata": dict(batch.metadata),
             "step": step,
