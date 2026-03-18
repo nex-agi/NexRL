@@ -809,7 +809,7 @@ class DataParallelPPOActor:
                                 kld = core_algos.kl_penalty(
                                     logprob=log_prob,
                                     ref_logprob=ref_log_probs_tensor,
-                                    kl_penalty_type=self.config.kl_loss_type,
+                                    kl_penalty=self.config.kl_loss_type,
                                     old_logprob=old_logprob,
                                 )
                                 kl_loss = masked_mean(kld, response_mask)
@@ -819,7 +819,7 @@ class DataParallelPPOActor:
                             kld = core_algos.kl_penalty(
                                 logprob=log_prob,
                                 ref_logprob=ref_log_probs_tensor,
-                                kl_penalty_type=self.config.kl_loss_type,
+                                kl_penalty=self.config.kl_loss_type,
                                 old_logprob=old_logprob,
                             )
                             kl_loss = masked_mean(kld, response_mask)

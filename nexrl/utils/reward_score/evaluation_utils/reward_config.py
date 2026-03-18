@@ -36,7 +36,7 @@ class RewardConfig:
     format_error_reward: float = 0
     # unk_error_reward: float = -1.0
     unk_error_reward: float = 0
-    llm_correct_reward: float = 0.7
+    llm_correct_reward: float = 1.0
 
 
 # class RewardType(Enum):

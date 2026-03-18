@@ -76,9 +76,7 @@ class WeaverServiceHolder:
         self._training_client = self._service_client.create_model(
             base_model=base_model, training_mode=training_mode, lora_config={"rank": lora_rank}
         )
-        logger.info(
-            f"Training client model id: {getattr(self._training_client, "model_id", None),}"
-        )
+        logger.info(f"Training client model id: {getattr(self._training_client, 'model_id', None)}")
 
         if tokenizer_path is None:
             # Initialize tokenizer from training client helper
@@ -143,6 +141,8 @@ class WeaverServiceHolder:
         # Ensure tool_call function.arguments are dicts, not JSON strings.
         # Chat templates use Jinja2 .items() on arguments, which requires a mapping.
         for message in messages_copy:
+            if not isinstance(message, dict):
+                continue
             tool_calls = message.get("tool_calls")
             if not tool_calls:
                 continue

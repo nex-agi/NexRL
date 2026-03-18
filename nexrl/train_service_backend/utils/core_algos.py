@@ -22,8 +22,6 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 import torch
 
-from .core_utils import masked_mean
-
 
 def masked_mean(tensor: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Compute mean of tensor where mask is True."""
