@@ -161,7 +161,8 @@ class MathJudgeV5Fn(RewardFn):
         if urls_env is None:
             raise ValueError("LLM_JUDGE_URL environment variable is not set")
         urls = urls_env.split("\n")
-        self.clients = [openai.OpenAI(base_url=url, api_key="_") for url in urls]
+        api_key = os.environ.get("LLM_JUDGE_API_KEY", "_")
+        self.clients = [openai.OpenAI(base_url=url, api_key=api_key) for url in urls]
         self.client = random.choice(self.clients)
 
         model_name = os.environ.get("LLM_JUDGE_MODEL")
@@ -191,6 +192,80 @@ class MathJudgeV5Fn(RewardFn):
         # print('【answer】', answer)
         prompt_j = scale_verify_promptv5.replace("【problem】", question)
         # Convert ground_truth to string for prompt
+        gt_str = ground_truth if isinstance(ground_truth, str) else str(ground_truth)
+        prompt_j = prompt_j.replace("【ground_truth】", gt_str)
+        prompt_j = prompt_j.replace("【answer】", answer)
+        for i in range(2):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt_j,
+                        }
+                    ],
+                )
+                content = response.choices[0].message.content
+                print("【llm judge response】", content)
+                if "```json" in content:
+                    content = content.split("```json")[1].strip()
+                elif content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                result = json.loads(content)
+            except Exception as e:
+                print(f"[Error in ScaleVerifyV5: {e}, retrying {i+1}/5]" f"\n[Prompt: {prompt_j}]")
+                continue
+            final_student_answer = result.get("final_student_answer")
+            if (
+                "Incomplete" in final_student_answer
+                or "None" in final_student_answer
+                or final_student_answer == ""
+                or final_student_answer is None
+            ):
+                return self.config.format_reward, False
+            if result.get("judge"):
+                return self.config.llm_correct_reward, True
+
+            return self.config.format_reward, False
+
+
+class MathBoxedLLMJudgeFn(RewardFn):
+
+    def __init__(self, config: RewardConfig):
+        super().__init__(config)
+        urls_env = os.environ.get("LLM_JUDGE_URL")
+        if urls_env is None:
+            raise ValueError("LLM_JUDGE_URL environment variable is not set")
+        urls = urls_env.split("\n")
+        api_key = os.environ.get("LLM_JUDGE_API_KEY", "_")
+        self.clients = [openai.OpenAI(base_url=url, api_key=api_key) for url in urls]
+        self.client = random.choice(self.clients)
+
+        model_name = os.environ.get("LLM_JUDGE_MODEL")
+        if model_name is None:
+            raise ValueError("LLM_JUDGE_MODEL environment variable is not set")
+        self.model_name: str = model_name
+
+    def __call__(  # pylint: disable=redefined-outer-name
+        self,
+        prompt: str,
+        model_response: str,
+        ground_truth: str | list[str],
+        raw_prompt: list[dict[str, Any]] | None = None,
+    ):
+        model_solution = model_response
+
+        if raw_prompt is None:
+            return self.config.format_error_reward, False
+
+        question = raw_prompt[-1]["content"]
+        answer = extract_answer(model_solution)
+        if answer is None:
+            return self.config.format_reward, False
+        prompt_j = scale_verify_promptv5.replace("【problem】", question)
         gt_str = ground_truth if isinstance(ground_truth, str) else str(ground_truth)
         prompt_j = prompt_j.replace("【ground_truth】", gt_str)
         prompt_j = prompt_j.replace("【answer】", answer)
@@ -281,6 +356,8 @@ def compute_score(  # pylint: disable=redefined-outer-name
         reward_fn = MathJudgeV5Fn(reward_config)
     elif judge_mode == "rule+llm_judge":
         reward_fn = HybridMathJudgeFnV5(reward_config)
+    elif judge_mode == "boxed_llm_judge":
+        reward_fn = MathBoxedLLMJudgeFn(reward_config)
     else:
         raise ValueError(f"Invalid judge mode: {judge_mode}")
 

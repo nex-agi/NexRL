@@ -59,15 +59,17 @@ class RemoteApiGrpoKlTrainer(RemoteApiGrpoTrainer):
 
         teacher_train_service_config = get_train_service_config_by_role(train_service, "teacher")
         self._teacher_identifier = teacher_train_service_config.get("identifier", "teacher")
-        self._teacher_url = teacher_train_service_config.url
-        self._teacher_backend = teacher_train_service_config.backend
+        self._teacher_backend = teacher_train_service_config.get("backend", "mock")
+        self._teacher_config = teacher_train_service_config
 
-        # Client is created lazily in initialize_workers()
+        # Clients are created lazily in initialize_workers()
         self._teacher_service_client: TrainServiceClient | None = None
+        self._teacher_training_client = None  # For Weaver backend
 
         logger.info(
-            "RemoteApiGrpoKlTrainer initialized: teacher_identifier=%s",
+            "RemoteApiGrpoKlTrainer initialized: teacher_identifier=%s, teacher_backend=%s",
             self._teacher_identifier,
+            self._teacher_backend,
         )
 
     # ========================================================================
@@ -82,14 +84,51 @@ class RemoteApiGrpoKlTrainer(RemoteApiGrpoTrainer):
             logger.info("[KL] Mock backend — skipping teacher worker initialization")
             return
 
+        if self._teacher_backend == "weaver":
+            # Create a new training instance through the Weaver service holder.
+            # Teacher model config can be specified explicitly in the teacher's
+            # train_service config; falls back to the actor's values via the
+            # shared WeaverServiceHolder.
+            assert (
+                self._service_holder is not None
+            ), "Service holder must be set before initialize_workers"
+            service_client = self._service_holder.get_service_client()
+
+            holder_base_model = self._service_holder._base_model  # pylint: disable=protected-access
+            holder_lora_rank = self._service_holder._lora_rank  # pylint: disable=protected-access
+            base_model = self._teacher_config.get("base_model", holder_base_model)
+            training_mode = self._teacher_config.get("training_mode", "lora")
+            lora_rank = self._teacher_config.get("lora_rank", holder_lora_rank)
+
+            self._teacher_training_client = service_client.create_model(
+                base_model=base_model,
+                training_mode=training_mode,
+                lora_config={"rank": lora_rank},
+            )
+            logger.info(
+                "[KL] Teacher training client created via Weaver service: "
+                "identifier=%s, base_model=%s, training_mode=%s, lora_rank=%s",
+                self._teacher_identifier,
+                base_model,
+                training_mode,
+                lora_rank,
+            )
+            return
+
+        # Legacy: URL-based approach for direct-zmq backend
+        teacher_url = self._teacher_config.get("url")
+        if not teacher_url:
+            raise ValueError(
+                f"Teacher train service config must have 'url' for backend '{self._teacher_backend}'"
+            )
         self._teacher_service_client = create_train_service_client(
             backend=self._teacher_backend,
-            url=self._teacher_url,
+            url=teacher_url,
             identifier=self._teacher_identifier,
         )
         logger.info(
             "[KL] Teacher service client created: url=%s, identifier=%s",
-            self._teacher_url,
+            teacher_url,
             self._teacher_identifier,
         )
 
