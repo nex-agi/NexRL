@@ -569,6 +569,15 @@ class WeaverServiceHolder:
         save_path = self._training_client.save_weights_for_sampler(name=name)
         return str(save_path)
 
+    def save_state(self, name: str) -> str:
+        """Save current model weights as a checkpoint and return the path."""
+        checkpoint = self._training_client.save_state(name=name, checkpoint_type="weight")
+        return str(checkpoint.path)
+
+    def load_state(self, path: str) -> None:
+        """Load model weights from a checkpoint path."""
+        self._training_client.load_state(path)
+
     def get_current_sampling_path(self) -> str:
         return self._current_sampling_path
 
