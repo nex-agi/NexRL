@@ -70,6 +70,30 @@ class RemoteApiGrpoKlTrainer(RemoteApiGrpoTrainer):
             self._teacher_identifier,
         )
 
+        # Student-to-teacher weight transfer frequency (<= 0 means disabled)
+        algorithm_config = config.get("algorithm", {})
+        self._student_transfer_freq = int(algorithm_config.get("student_transfer_freq", 0))
+
+        # Warn if transfer enabled but model_path differs (likely different model size)
+        if self._student_transfer_freq > 0:
+            actor_train_service_config = get_train_service_config_by_role(train_service, "actor")
+            actor_model_path = actor_train_service_config.get("model_path", "")
+            teacher_model_path = self._teacher_config.get("model_path", "")
+            if actor_model_path != teacher_model_path:
+                logger.warning(
+                    "[KL] student_transfer_freq=%d but actor and teacher have different "
+                    "model_path: actor=%s, teacher=%s. "
+                    "Make sure they are the same model size, otherwise "
+                    "load_checkpoint will fail at runtime.",
+                    self._student_transfer_freq,
+                    actor_model_path,
+                    teacher_model_path,
+                )
+            logger.info(
+                "[KL] Student-to-teacher weight transfer enabled: freq=%d",
+                self._student_transfer_freq,
+            )
+
     # ========================================================================
     # Initialization Methods
     # ========================================================================
@@ -121,3 +145,71 @@ class RemoteApiGrpoKlTrainer(RemoteApiGrpoTrainer):
             traj["use_kl"] = True
 
         return trajectories
+
+    # ========================================================================
+    # Training Override (Student-to-Teacher Sync)
+    # ========================================================================
+
+    def _has_teacher(self) -> bool:
+        """Check if a teacher client is available (either weaver or legacy backend)."""
+        return self._teacher_training_client is not None or self._teacher_service_client is not None
+
+    def train(self, trajectories: list[Trajectory]) -> dict:
+        """Train with periodic student-to-teacher weight sync."""
+        metrics = super().train(trajectories)
+
+        # self._train_step is incremented in BaseTrainer._main_loop() AFTER
+        # train() returns, so use (self._train_step + 1) for the post-increment value.
+        if self._student_transfer_freq > 0 and self._has_teacher():
+            next_step = self._train_step + 1
+            if next_step % self._student_transfer_freq == 0:
+                self._sync_student_to_teacher(next_step, metrics)
+
+        return metrics
+
+    def _sync_student_to_teacher(self, step: int, metrics: dict) -> None:
+        """
+        Save actor (student) weights, then load them into teacher (ref model).
+        Synchronous — blocks until the teacher finishes loading.
+        """
+        import time
+
+        from ..executor import execute
+
+        logger.info(
+            "[KL] Syncing student weights to teacher at step %d (student_transfer_freq=%d)",
+            step,
+            self._student_transfer_freq,
+        )
+
+        sync_start = time.time()
+
+        # Step 1: Save actor weights to a checkpoint path
+        assert self._service_holder is not None, "Service holder must be set before sync"
+        checkpoint_path = execute(
+            self._service_holder.save_state,
+            name=f"ref_sync_step_{step}",
+        )
+        logger.info("[KL] Actor checkpoint saved to: %s", checkpoint_path)
+
+        # Step 2: Load checkpoint into teacher (blocking)
+        if self._teacher_training_client is not None:
+            # Weaver backend: teacher is a weaver TrainingClient
+            self._teacher_training_client.load_state(checkpoint_path)
+        else:
+            # Legacy direct-zmq backend
+            assert self._teacher_service_client is not None
+            self._teacher_service_client.load_checkpoint(
+                path=checkpoint_path,
+                del_local_after_load=False,
+                load_weight_only=True,
+            )
+
+        sync_time = time.time() - sync_start
+        logger.info(
+            "[KL] Student-to-teacher sync completed in %.2fs at step %d",
+            sync_time,
+            step,
+        )
+        metrics["kl/student_transfer_time"] = sync_time
+        metrics["kl/student_transfer_step"] = step
