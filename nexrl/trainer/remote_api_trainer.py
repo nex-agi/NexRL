@@ -81,6 +81,7 @@ class RemoteApiTrainer(BaseTrainer):
         self._eps = train_config.get("eps", 1e-8)
         self._grad_clip_norm = train_config.get("grad_clip_norm", 1.0)
         self._entropy_coeff = train_config.get("entropy_coeff", 1e-4)
+        self._use_old_logprobs = train_config.get("use_old_logprobs", False)
 
         # Step counter for weight saving
         self._step_counter = 0
@@ -148,7 +149,7 @@ class RemoteApiTrainer(BaseTrainer):
         Returns:
             List of serializable datum dicts
         """
-        return convert_trajectories_to_datums(trajectories)
+        return convert_trajectories_to_datums(trajectories, use_old_logprobs=self._use_old_logprobs)
 
     def train(self, trajectories: list[Trajectory]) -> dict:
         """
@@ -209,7 +210,7 @@ class RemoteApiTrainer(BaseTrainer):
 
         loss_fn_config = {
             "entropy_coeff": self._entropy_coeff,
-            "enable_debug_dump": self._enable_debug_dump,  # Pass debug flag to Weaver
+            "enable_debug_dump": self._enable_debug_dump,
         }
 
         training_metrics = execute(

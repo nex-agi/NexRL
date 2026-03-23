@@ -43,6 +43,46 @@ _TOKENIZER_CACHE: dict[str, Any] = {}
 _TOKENIZER_LOCK = threading.Lock()
 
 
+def _extract_old_logprobs_from_payload(payload: dict[str, Any]) -> list[float]:
+    """
+    Extract per-token old logprobs from backend-specific payloads.
+
+    Supports formats like:
+    - [float, ...]
+    - [[logprob, token_id, ...], ...]
+    """
+    candidates = [
+        payload.get("output_token_old_logprobs"),
+        payload.get("token_old_logprobs"),
+        payload.get("old_logprobs"),
+    ]
+    meta_info = payload.get("meta_info")
+    if isinstance(meta_info, dict):
+        candidates.extend(
+            [
+                meta_info.get("output_token_old_logprobs"),
+                meta_info.get("token_old_logprobs"),
+                meta_info.get("old_logprobs"),
+            ]
+        )
+
+    for raw in candidates:
+        if not raw:
+            continue
+        normalized: list[float] = []
+        for item in raw:
+            if item is None:
+                continue
+            if isinstance(item, (list, tuple)):
+                if len(item) > 0 and item[0] is not None:
+                    normalized.append(float(item[0]))
+                continue
+            normalized.append(float(item))
+        if normalized:
+            return normalized
+    return []
+
+
 def _get_cached_tokenizer(tokenizer_path: str):
     """
     Get or create a cached tokenizer (process-local singleton).
@@ -218,6 +258,7 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         extra_body["min_tokens"] = 10
         extra_body["skip_special_tokens"] = False
         extra_body["return_tokens_as_token_ids"] = True
+        extra_body["return_old_logprob"] = True
 
         max_retries = self._config.inference_service.max_retries
         completion = None
@@ -261,6 +302,7 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
 
         response_tokens: list[int] = []
         response_logprobs: list[float] = []
+        response_old_logprobs: list[float] = []
         if hasattr(completion.choices[0], "logprobs") and completion.choices[0].logprobs:
             backend = self._config.inference_service.get("backend", "vllm")
             if backend == "vllm":
@@ -287,12 +329,22 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         else:
             raise ValueError(f"OpenAI response tokens is None, completion:{completion}")
 
+        completion_dump = completion.model_dump()
+        choices_dump = completion_dump.get("choices", [])
+        if choices_dump:
+            response_old_logprobs = _extract_old_logprobs_from_payload(choices_dump[0])
+        if not response_old_logprobs:
+            response_old_logprobs = _extract_old_logprobs_from_payload(completion_dump)
+        if not response_old_logprobs:
+            response_old_logprobs = response_logprobs
+
         out: dict[str, Any] = {
-            **completion.model_dump(),
+            **completion_dump,
             "nexrl_train": {
                 "prompt_tokens": prompt_tokens,
                 "response_tokens": response_tokens,
                 "response_logprobs": response_logprobs,
+                "response_old_logprobs": response_old_logprobs,
             },
         }
         return out
@@ -320,6 +372,7 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         extra_body["skip_special_tokens"] = False
         extra_body["include_stop_str_in_output"] = True
         extra_body["min_tokens"] = 2
+        extra_body["return_old_logprob"] = True
 
         kwargs.pop("model", None)  # Remove model if present, don't error if missing
 
@@ -351,6 +404,7 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
 
         response_tokens: list[int] = []
         response_logprobs: list[float] = []
+        response_old_logprobs: list[float] = []
         try:
             if hasattr(completion.choices[0], "logprobs") and completion.choices[0].logprobs:
                 backend = self._config.inference_service.get("backend", "vllm")
@@ -393,12 +447,22 @@ class OpenAIInferenceServiceClient(InferenceServiceClient):
         except Exception as e:
             logger.error(f"Error extracting response tokens/logprobs: {e}")
 
+        completion_dump = completion.model_dump()
+        choices_dump = completion_dump.get("choices", [])
+        if choices_dump:
+            response_old_logprobs = _extract_old_logprobs_from_payload(choices_dump[0])
+        if not response_old_logprobs:
+            response_old_logprobs = _extract_old_logprobs_from_payload(completion_dump)
+        if not response_old_logprobs:
+            response_old_logprobs = response_logprobs
+
         out: dict[str, Any] = {
-            **completion.model_dump(),
+            **completion_dump,
             "nexrl_train": {
                 "prompt_tokens": prompt_tokens if isinstance(prompt_tokens, list) else [],
                 "response_tokens": response_tokens,
                 "response_logprobs": response_logprobs,
+                "response_old_logprobs": response_old_logprobs,
             },
         }
         return out

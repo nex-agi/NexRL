@@ -363,6 +363,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         prompt_tokens: list[int],
         response_tokens: list[int],
         response_logprobs: list[float] | None = None,
+        response_old_logprobs: list[float] | None = None,
     ) -> dict[str, list]:
         """
         Generate loss mask and combine prompt+response tokens.
@@ -371,15 +372,19 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
             prompt_tokens: Prompt token IDs
             response_tokens: Response token IDs
             response_logprobs: Response log probabilities (optional)
+            response_old_logprobs: Response old log probabilities (optional)
 
         Returns:
             Dictionary with keys:
                 - tokens: Combined token sequence
                 - loss_mask: Mask (0 for prompt, 1 for response)
                 - logprobs: Log probabilities (0.0 for prompt, actual for response)
+                - old_log_probs: Old log probabilities (0.0 for prompt, actual for response)
         """
         if response_logprobs is None:
             response_logprobs = []
+        if response_old_logprobs is None:
+            response_old_logprobs = response_logprobs
 
         # Create masks and logprobs
         prompt_loss_mask = [0] * len(prompt_tokens)
@@ -390,6 +395,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         tokens = prompt_tokens + response_tokens
         loss_mask = prompt_loss_mask + response_loss_mask
         logprobs = prompt_logprobs + response_logprobs
+        old_log_probs = prompt_logprobs + response_old_logprobs
 
         assert len(tokens) == len(
             loss_mask
@@ -397,11 +403,15 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
         assert len(tokens) == len(
             logprobs
         ), f"Length mismatch: tokens={len(tokens)}, logprobs={len(logprobs)}"
+        assert len(tokens) == len(
+            old_log_probs
+        ), f"Length mismatch: tokens={len(tokens)}, old_log_probs={len(old_log_probs)}"
 
         return {
             "tokens": tokens,
             "loss_mask": loss_mask,
             "logprobs": logprobs,
+            "old_log_probs": old_log_probs,
         }
 
     def trace_prefix_merge(self, trajectories: list[dict]) -> list[dict]:
@@ -432,10 +442,12 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
                 new_tokens = traj_tokens[len(current_prefix) :]
                 new_loss_mask = traj["loss_mask"][len(current_prefix) :]
                 new_logprobs = traj["logprobs"][len(current_prefix) :]
+                new_old_log_probs = traj["old_log_probs"][len(current_prefix) :]
 
                 merged[-1]["tokens"] += new_tokens
                 merged[-1]["loss_mask"] += new_loss_mask
                 merged[-1]["logprobs"] += new_logprobs
+                merged[-1]["old_log_probs"] += new_old_log_probs
 
                 current_prefix = merged[-1]["tokens"]
             else:
@@ -539,6 +551,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
                 prompt_tokens=nexrl_train.get("prompt_tokens", []),
                 response_tokens=nexrl_train.get("response_tokens", []),
                 response_logprobs=nexrl_train.get("response_logprobs", []),
+                response_old_logprobs=nexrl_train.get("response_old_logprobs"),
             )
             processed["finish_reason"] = nexau_traj.get("finish_reason", "stop")
             processed_trajectories.append(processed)
@@ -562,6 +575,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
                     traj_dict["tokens"], traj_dict["loss_mask"], traj_dict["logprobs"]
                 )
             )
+            traj_dict["old_log_probs"] = traj_dict["old_log_probs"][: len(traj_dict["tokens"])]
             if truncated:
                 is_truncated = True
 
@@ -613,6 +627,7 @@ class BaseNexAURolloutWorker(BaseRolloutWorker):
                     "finish_reason": traj_dict.get("finish_reason", "stop"),
                     "score": {"reward_score": evaluation_result.reward},
                     "logprobs": traj_dict["logprobs"],
+                    "old_log_probs": traj_dict["old_log_probs"],
                     "is_truncated": is_truncated,
                 },
             )

@@ -164,6 +164,8 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         prompt_tokens: list[int] = result["prompt_tokens"]
         response_tokens: list[int] = result["response_tokens"]
         response_logprobs: list[float] = result["response_logprobs"]
+        response_old_logprobs: list[float] = result.get("response_old_logprobs", response_logprobs)
+        response_sampling_masks = result.get("response_sampling_masks")
 
         openai_like = {
             "id": self._make_id("cmpl"),
@@ -187,7 +189,9 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
                 "prompt_tokens": prompt_tokens,
                 "response_tokens": response_tokens,
                 "response_logprobs": response_logprobs,
+                "response_old_logprobs": response_old_logprobs,
             },
+            "sampling_mask": response_sampling_masks,
         }
 
         return {**openai_like, **kwargs}
@@ -236,8 +240,10 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         prompt_tokens: list[int] = result["prompt_tokens"]
         response_tokens: list[int] = result["response_tokens"]
         response_logprobs: list[float] = result["response_logprobs"]
+        response_old_logprobs: list[float] = result.get("response_old_logprobs", response_logprobs)
         tool_string: str | None = result.get("tool_string")
         reasoning_string: str | None = result.get("reasoning_string")
+        response_sampling_masks = result.get("response_sampling_masks")
 
         # Response content is already cleaned by service holder
         response_content = result["response"]
@@ -317,7 +323,9 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
                 "prompt_tokens": prompt_tokens,
                 "response_tokens": response_tokens,
                 "response_logprobs": response_logprobs,
+                "response_old_logprobs": response_old_logprobs,
             },
+            "sampling_mask": response_sampling_masks,
         }
 
         return {**openai_like, **kwargs}

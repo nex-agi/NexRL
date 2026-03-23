@@ -101,7 +101,8 @@ class InferenceServiceClient(ABC):
 
         Returns:
             dict[str, Any]: LLM response dict containing all completion fields plus:
-                - nexrl_train: dict with prompt_tokens, response_tokens, response_logprobs
+                - nexrl_train: dict with prompt_tokens, response_tokens,
+                  response_logprobs, response_old_logprobs
         """
 
     @abstractmethod
@@ -115,7 +116,8 @@ class InferenceServiceClient(ABC):
 
         Returns:
             dict[str, Any]: LLM response dict containing all completion fields plus:
-                - nexrl_train: dict with prompt_tokens, response_tokens, response_logprobs
+                - nexrl_train: dict with prompt_tokens, response_tokens,
+                  response_logprobs, response_old_logprobs
         """
 
     def generate_with_token(
