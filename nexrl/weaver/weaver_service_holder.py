@@ -39,6 +39,22 @@ from ..utils.url_utils import ensure_url_scheme
 logger = logging.getLogger(__name__)
 
 
+def _normalize_old_logprobs(raw_old_logprobs: Any) -> list[float]:
+    """Normalize old logprobs from backend-specific payloads."""
+    if not raw_old_logprobs:
+        return []
+    normalized: list[float] = []
+    for item in raw_old_logprobs:
+        if item is None:
+            continue
+        if isinstance(item, (list, tuple)):
+            if len(item) > 0 and item[0] is not None:
+                normalized.append(float(item[0]))
+            continue
+        normalized.append(float(item))
+    return normalized
+
+
 class WeaverServiceHolder:
     """
     Centralized manager for Weaver services.
@@ -172,6 +188,26 @@ class WeaverServiceHolder:
             tools=tools,
         )
 
+    def configure_sampling_flags(
+        self,
+        return_sampling_mask: bool = False,
+        return_old_logprob: bool = False,
+    ) -> None:
+        """Configure flags for sampling mask and old logprob returns."""
+        self._return_sampling_mask = return_sampling_mask
+        self._return_old_logprob = return_old_logprob
+
+    def _extract_sampling_outputs(
+        self, sequence: dict[str, Any], response_logprobs: list[float]
+    ) -> tuple[list[float], Any]:
+        response_old_logprobs = _normalize_old_logprobs(
+            sequence.get("old_logprobs") or sequence.get("output_token_old_logprobs")
+        )
+        if not response_old_logprobs:
+            response_old_logprobs = response_logprobs
+        response_sampling_masks = sequence.get("sampling_masks")
+        return response_old_logprobs, response_sampling_masks
+
     def sample_from_messages(
         self,
         messages: list[dict[str, Any]],
@@ -216,6 +252,8 @@ class WeaverServiceHolder:
                 num_samples=num_samples,
                 sampling_params=sampling_params,
                 include_prompt_logprobs=False,
+                return_sampling_mask=getattr(self, "_return_sampling_mask", False),
+                return_old_logprob=getattr(self, "_return_old_logprob", False),
                 wait=True,
             )
         except Exception as e:
@@ -227,6 +265,9 @@ class WeaverServiceHolder:
             sequence = sample_result.get("sequences")[0]
             response_tokens = list(sequence["tokens"]) or []
             response_logprobs = list(sequence["logprobs"]) or []
+            response_old_logprobs, response_sampling_masks = self._extract_sampling_outputs(
+                sequence, response_logprobs
+            )
 
             full_response = sequence.get("text") or self._tokenizer.decode(
                 response_tokens, skip_special_tokens=True
@@ -275,6 +316,8 @@ class WeaverServiceHolder:
             "prompt_tokens": prompt_tokens,
             "response_tokens": response_tokens,
             "response_logprobs": response_logprobs,
+            "response_old_logprobs": response_old_logprobs,
+            "response_sampling_masks": response_sampling_masks,
             "finish_reason": finish_reason,
             "tool_string": tool_string,
             "reasoning_string": reasoning_string,
@@ -307,12 +350,17 @@ class WeaverServiceHolder:
             num_samples=num_samples,
             sampling_params=sampling_params,
             include_prompt_logprobs=False,
+            return_sampling_mask=getattr(self, "_return_sampling_mask", False),
+            return_old_logprob=getattr(self, "_return_old_logprob", False),
             wait=True,
         )
 
         sequence = (sample_result.get("sequences") or [{}])[0]
         response_tokens = sequence.get("tokens") or []
         response_logprobs = sequence.get("logprobs") or []
+        response_old_logprobs, response_sampling_masks = self._extract_sampling_outputs(
+            sequence, response_logprobs
+        )
         response = sequence.get("text") or self._tokenizer.decode(
             response_tokens, skip_special_tokens=True
         )
@@ -325,6 +373,8 @@ class WeaverServiceHolder:
             "prompt_tokens": prompt_tokens,
             "response_tokens": response_tokens,
             "response_logprobs": response_logprobs,
+            "response_old_logprobs": response_old_logprobs,
+            "response_sampling_masks": response_sampling_masks,
             "finish_reason": finish_reason,
             "tool_string": None,
             "is_valid": True,

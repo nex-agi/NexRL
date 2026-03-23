@@ -1157,4 +1157,26 @@ class NexRLController:
                     logger.error(f"WeaverServiceHolder failed initialization: {e}")
                     raise
 
+        # Configure sampling flags from inference_service config
+        inference_cfg = self._config.service.inference_service
+        return_sampling_mask = inference_cfg.get("return_sampling_mask", False)
+        return_old_logprob = inference_cfg.get("return_old_logprob", False)
+        if return_sampling_mask or return_old_logprob:
+            logger.info(
+                f"Configuring sampling flags: return_sampling_mask={return_sampling_mask}, "
+                f"return_old_logprob={return_old_logprob}"
+            )
+            sampling_flag_kwargs = {
+                "return_sampling_mask": return_sampling_mask,
+                "return_old_logprob": return_old_logprob,
+            }
+            if self._launch_mode == "ray":
+                ray.get(
+                    self._weaver_service_holder.configure_sampling_flags.remote(  # type: ignore[attr-defined]
+                        **sampling_flag_kwargs
+                    )
+                )
+            else:
+                self._weaver_service_holder.configure_sampling_flags(**sampling_flag_kwargs)
+
         logger.info("WeaverServiceHolder initialized successfully")
