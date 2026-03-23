@@ -22,7 +22,6 @@ All tokenization and response parsing happens inside this holder.
 import json
 import logging
 from copy import deepcopy
-from typing import Any
 
 try:
     import tinker

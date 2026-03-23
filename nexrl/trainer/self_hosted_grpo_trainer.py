@@ -160,11 +160,23 @@ class SelfHostedGrpoTrainer(SelfHostedTrainer):
                 "position_ids",
                 "scoring_attention_mask",
                 "loss_mask",
+                "old_log_probs",
             ],
         )
 
-        # Step 2: Recompute old logprobs
-        if self._do_old_log_prob_compute:
+        # Step 2: Use rollout old logprobs when available, otherwise recompute/fallback.
+        response_length = batch.values["responses"].size(-1)
+        rollout_old_log_probs = batch.values.get("old_log_probs")
+        if (
+            isinstance(rollout_old_log_probs, torch.Tensor)
+            and rollout_old_log_probs.dim() == 2
+            and rollout_old_log_probs.shape[0] == len(batch)
+            and rollout_old_log_probs.shape[1] == response_length
+        ):
+            old_log_probs = rollout_old_log_probs
+            logger.debug(f"Using rollout old_log_probs with shape: {old_log_probs.shape}")
+            batch.values["old_log_probs"] = old_log_probs
+        elif self._do_old_log_prob_compute:
             old_log_probs = self._compute_old_log_probs(batch)
             logger.debug(f"Old log probs computed with shape: {old_log_probs.shape}")
             batch.values["old_log_probs"] = old_log_probs

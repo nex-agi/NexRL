@@ -139,16 +139,19 @@ class AgentRolloutWorker(BaseRolloutWorker):
             prompt_tokens = train_fields.get("prompt_tokens", [])
             response_tokens = train_fields.get("response_tokens", [])
             response_logprobs = train_fields.get("response_logprobs", [])
+            response_old_logprobs = train_fields.get("response_old_logprobs", response_logprobs)
 
             # Create tokens and loss_mask
             tokens = prompt_tokens + response_tokens
             loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
             logprobs = [0.0] * len(prompt_tokens) + response_logprobs
+            old_log_probs = [0.0] * len(prompt_tokens) + response_old_logprobs
 
             # Truncate before reward so evaluation reflects the actual training data
             tokens, loss_mask, logprobs, is_truncated = self._check_and_truncate(
                 tokens, loss_mask, logprobs
             )
+            old_log_probs = old_log_probs[: len(tokens)]
 
             if is_truncated and agent_result.get("reward"):
                 logger.warning("Reward reset to 0.0 due to sequence truncation")
@@ -172,6 +175,7 @@ class AgentRolloutWorker(BaseRolloutWorker):
                     # Logprobs field (0.0 for prompt, actual logprobs for response)
                     "logprobs": [0.0] * len(prompt_tokens) + response_logprobs,
                     "sampling_mask": agent_result.get("sampling_mask", None),
+                    "old_log_probs": old_log_probs,
                     "is_truncated": is_truncated,
                 },
             )
@@ -197,6 +201,7 @@ class AgentRolloutWorker(BaseRolloutWorker):
                 "prompt_tokens",
                 "response_tokens",
                 "response_logprobs",
+                "response_old_logprobs",
                 "loss_mask",
                 "reward",
             }

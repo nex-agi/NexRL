@@ -51,16 +51,20 @@ class SimpleRolloutWorker(BaseRolloutWorker):
         prompt_tokens = completion_result.get("prompt_tokens", [])
         response_tokens = completion_result.get("response_tokens", [])
         response_logprobs = completion_result.get("response_logprobs", [])
+        response_old_logprobs = completion_result.get("response_old_logprobs", response_logprobs)
+        response_sampling_masks = completion_result.get("sampling_mask")
 
         # Create tokens and loss_mask
         tokens = prompt_tokens + response_tokens
         loss_mask = [0] * len(prompt_tokens) + [1] * len(response_tokens)
         logprobs = [0.0] * len(prompt_tokens) + response_logprobs
+        old_log_probs = [0.0] * len(prompt_tokens) + response_old_logprobs
 
         # Truncate before evaluation so reward reflects the actual training data
         tokens, loss_mask, logprobs, is_truncated = self._check_and_truncate(
             tokens, loss_mask, logprobs
         )
+        old_log_probs = old_log_probs[: len(tokens)]
 
         # Extract answer from response using <answer></answer> tags
         response = completion_result.get("response", "")
@@ -98,9 +102,11 @@ class SimpleRolloutWorker(BaseRolloutWorker):
                 "finish_reason": completion_result.get("finish_reason", "stop"),
                 "model_tag": identifier,
                 "logprobs": logprobs,
+                "old_log_probs": old_log_probs,
                 "is_truncated": is_truncated,
                 "response": response,
                 "extracted_answer": extracted_answer,
+                "sampling_mask": response_sampling_masks,
             },
         )
 

@@ -17,7 +17,10 @@ from __future__ import annotations
 from ..nexrl_types import Trajectory  # pylint: disable=relative-beyond-top-level
 
 
-def convert_trajectories_to_datums(trajectories: list[Trajectory]) -> list[dict]:
+def convert_trajectories_to_datums(
+    trajectories: list[Trajectory],
+    use_old_logprobs: bool = False,
+) -> list[dict]:
     """
     Convert trajectories to serializable datum dictionaries for the importance_sampling loss.
 
@@ -31,16 +34,29 @@ def convert_trajectories_to_datums(trajectories: list[Trajectory]) -> list[dict]
     The returned dicts always contain a ``loss_mask`` key so the weaver backend can
     use it.  The tinker backend strips it before sending to the server (the tinker
     server does not accept extra fields in loss_fn_inputs).
+
+    Args:
+        trajectories: List of Trajectory objects.
+        use_old_logprobs: When True, use old_log_probs (from rollout server)
+            as the sampling logprobs for the IS ratio instead of the default
+            logprobs. Falls back to logprobs if old_log_probs is absent.
     """
     datums_data = []
     for traj in trajectories:
         tokens = traj["tokens"]
         logprobs = traj["logprobs"]
         loss_mask = traj["loss_mask"]
+        sampling_logprobs = logprobs
+        if use_old_logprobs:
+            old_lp = traj.get("old_log_probs")
+            if old_lp is not None:
+                sampling_logprobs = old_lp
 
         input_tokens = tokens[:-1]
         target_tokens = tokens[1:]
-        adjusted_logprobs = logprobs[1:] if len(logprobs) == len(tokens) else logprobs
+        adjusted_logprobs = (
+            sampling_logprobs[1:] if len(sampling_logprobs) == len(tokens) else sampling_logprobs
+        )
         adjusted_loss_mask = loss_mask[1:]
 
         # --- decide per-token advantages ---

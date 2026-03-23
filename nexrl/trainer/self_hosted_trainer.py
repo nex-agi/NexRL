@@ -394,6 +394,10 @@ class SelfHostedTrainer(BaseTrainer):
             response_tokens = tokens[1:total_width]
             response_loss_mask_values = loss_mask_values[1:total_width]
 
+            if len(tokens) > total_width:
+                logger.debug(f"Trajectory truncated from {len(tokens)} to {total_width} tokens")
+            old_log_probs_values = traj.get("old_log_probs")
+
             # Prompt: exactly 1 token, no padding needed
             prompt_input_ids = torch.tensor([prompt_tokens], dtype=torch.long)
             prompt_attention_mask = torch.ones((1, 1), dtype=torch.int)
@@ -421,6 +425,24 @@ class SelfHostedTrainer(BaseTrainer):
                 left_pad=False,
                 truncation="error",
             )
+
+            # If rollout provided per-token old log probs, keep response-only tensor for RL.
+            if old_log_probs_values is not None:
+                if len(old_log_probs_values) != len(tokens):
+                    raise ValueError(
+                        "Trajectory old_log_probs length must match tokens length. "
+                        f"Got old_log_probs={len(old_log_probs_values)}, tokens={len(tokens)}"
+                    )
+                response_old_log_probs_values = old_log_probs_values[1:total_width]
+                response_old_log_probs = padding_data(
+                    torch.tensor([response_old_log_probs_values], dtype=torch.float32),
+                    max_length=response_width,
+                    pad_token_id=0.0,
+                    left_pad=False,
+                    truncation="error",
+                )
+                # Use response-only old_log_probs for policy loss denominator in trainer.
+                traj["old_log_probs"] = response_old_log_probs.squeeze(0)
 
             # Concatenate prompt and response
             input_ids = torch.cat([prompt_input_ids, response_input_ids], dim=1)
