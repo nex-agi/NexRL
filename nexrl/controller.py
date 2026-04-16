@@ -273,27 +273,44 @@ class NexRLController:
             config=actor_train_service.get("config", {}),
         )
 
+        resumed = False
         if self._config.resume.mode != "disable":
-            self._load_resume_checkpoint()
+            resumed = self._load_resume_checkpoint()
 
-        self._train_service_client.save_checkpoint(
-            self._config.trainer.sync_weight_path,
-            global_step=0,
-            saved_fully_shared_ckpt=False,
-            save_weight_only=True,
-            remove_previous_ckpt=False,
-        )
-        logger.info("Syncing weight to rollout service...")
-        execute(
-            self.weight_sync_controller.sync_weight_to_rollout_service,
-            actor_train_service.identifier,
-        )
+        if resumed:
+            # Resume from checkpoint — inference service started with base model
+            # but training service now has checkpoint weights, so sync is required.
+            self._train_service_client.save_checkpoint(
+                self._config.trainer.sync_weight_path,
+                global_step=0,
+                saved_fully_shared_ckpt=False,
+                save_weight_only=True,
+                remove_previous_ckpt=False,
+            )
+            logger.info("Syncing resumed checkpoint weight to rollout service...")
+            execute(
+                self.weight_sync_controller.sync_weight_to_rollout_service,
+                actor_train_service.identifier,
+            )
+        else:
+            # Fresh start — both sides already have the same base model weights.
+            # Skip initial sync so trainer and inference service can start independently
+            # without blocking on each other. First sync will happen after the first
+            # training step completes.
+            logger.info(
+                "Skipping initial weight sync: training from scratch with identical "
+                "base model on both sides. First sync after training step 1."
+            )
 
-    def _load_resume_checkpoint(self):
-        """Load checkpoint based on resume configuration"""
+    def _load_resume_checkpoint(self) -> bool:
+        """Load checkpoint based on resume configuration.
+
+        Returns:
+            True if a checkpoint was actually loaded, False otherwise.
+        """
         if self._config.resume.mode == "disable":
             logger.info("Resume mode is disabled, training from scratch")
-            return
+            return False
 
         if self.use_tinker or self.use_weaver:
             raise NotImplementedError("Tinker/Weaver backend does not support checkpoint loading")
@@ -311,7 +328,7 @@ class NexRLController:
             global_step_folder = self._find_latest_checkpoint(checkpoint_folder)
             if global_step_folder is None:
                 logger.info("No checkpoint found for auto resume, training from scratch")
-                return
+                return False
         elif self._config.resume.mode == "from_path":
             # Use specific checkpoint path from config
             resume_path = self._config.resume.resume_path
@@ -379,6 +396,8 @@ class NexRLController:
             )
         else:
             logger.info("No batches to skip (global_step=0)")
+
+        return True
 
     def _find_latest_checkpoint(self, checkpoint_folder: str) -> str | None:
         """Find the latest checkpoint in the given folder"""
