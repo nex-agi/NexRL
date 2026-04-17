@@ -108,12 +108,20 @@ class WeaverServiceHolder:
         else:
             logger.info("Skipping sampler provisioning (need_sampling=False)")
 
+        self._closed = False
+
         logger.info("Initialized WeaverServiceHolder")
 
     def close(self):
         """
         Close the Weaver service client and cleanup resources.
+
+        Idempotent: safe to call multiple times (atexit, __del__, explicit).
         """
+        if self._closed:
+            return
+        self._closed = True
+
         if hasattr(self, "_service_client") and self._service_client is not None:
             logger.info("Closing WeaverServiceHolder and service client")
             try:

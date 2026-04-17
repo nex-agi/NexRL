@@ -14,6 +14,8 @@
 
 import logging
 import os
+import signal
+import sys
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -44,9 +46,15 @@ def main_task(config: DictConfig):
     controller.run()
 
 
+def _sigterm_handler(signum, _frame):
+    """Convert SIGTERM to SystemExit so atexit handlers fire."""
+    sys.exit(128 + signum)
+
+
 @hydra.main(config_path="config", config_name="rl_train", version_base=None)
 def main(config: DictConfig):
     """Main entry point supporting both local and Ray launch modes"""
+    signal.signal(signal.SIGTERM, _sigterm_handler)
     set_logging_basic_config()
 
     # 1. Try TRAIN_CONFIG environment variable (most reliable, set by launch scripts)

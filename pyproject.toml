@@ -67,7 +67,7 @@ core = [
     "pandas>=2.3.1",
 
     # Weaver & Tinker Integration
-    "nex-weaver>=1.4.0",
+    "nex-weaver>=1.6.2",
     "tinker",
     "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git",
 
