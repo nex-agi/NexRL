@@ -74,6 +74,8 @@ rollout_worker:
   num_workers: 128
   need_llm_inference: true
   temperature: 0.7
+  top_p: 1.0
+  top_k: -1
 
   # NexAU-specific configuration (relative to this config file)
   nexau_agent_config_path: "agent_workspace/agent_config.yaml"

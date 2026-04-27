@@ -156,6 +156,30 @@ temperature: 0.7
 temperature: 1.0
 ```
 
+### top_p
+
+**Type:** `float`
+**Default:** `1.0`
+
+Nucleus sampling probability for LLM generation. Weaver forwards this with the request-level
+sampling parameters. Backends that do not support this filter may ignore it and log a warning.
+
+```yaml
+top_p: 0.95
+```
+
+### top_k
+
+**Type:** `int`
+**Default:** `-1`
+
+Top-k sampling cutoff for LLM generation. Use `-1` to leave top-k disabled when supported
+by the backend. Backends that do not support this filter may ignore it and log a warning.
+
+```yaml
+top_k: 50
+```
+
 ## NexAU-Specific Options
 
 ### custom_rollout_worker_module_path

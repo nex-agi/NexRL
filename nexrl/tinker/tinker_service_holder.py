@@ -34,6 +34,13 @@ from ..utils.url_utils import ensure_url_scheme
 logger = logging.getLogger(__name__)
 
 
+def _warn_unsupported_sampling_filters(top_p: float, top_k: int) -> None:
+    if top_p != 1.0 or top_k != -1:
+        logger.warning(
+            "Tinker does not support top_p or top_k sampling filters. These will be ignored."
+        )
+
+
 class TinkerServiceHolder:
     """
     Centralized manager for Tinker services.
@@ -170,6 +177,8 @@ class TinkerServiceHolder:
         messages: list[dict[str, Any]],
         max_tokens: int,
         temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
         num_samples: int = 1,
         tools: list[dict[str, Any]] | None = None,
     ) -> dict:
@@ -189,6 +198,8 @@ class TinkerServiceHolder:
         Returns:
             Dictionary with serializable results (same structure as sample_from_prompt)
         """
+        _warn_unsupported_sampling_filters(top_p, top_k)
+        del top_p, top_k
         from tinker import types
 
         # Build prompt using renderer (handles chat template)
@@ -298,6 +309,8 @@ class TinkerServiceHolder:
         prompt: str,
         max_tokens: int,
         temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
         num_samples: int = 1,
     ) -> dict:
         """
@@ -315,6 +328,8 @@ class TinkerServiceHolder:
         Returns:
             Dictionary with serializable results (same structure as sample_from_messages)
         """
+        _warn_unsupported_sampling_filters(top_p, top_k)
+        del top_p, top_k
         from tinker import types
 
         # Tokenize prompt directly (no chat template)
@@ -363,6 +378,8 @@ class TinkerServiceHolder:
         input_ids: list[int],
         max_tokens: int,
         temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
         num_samples: int = 1,
         stop: list[str] | None = None,
     ) -> dict:
@@ -382,6 +399,8 @@ class TinkerServiceHolder:
         Returns:
             Dictionary with serializable results (same structure as sample_from_messages)
         """
+        _warn_unsupported_sampling_filters(top_p, top_k)
+        del top_p, top_k
         from tinker import types
 
         model_input = types.ModelInput.from_ints(tokens=input_ids)

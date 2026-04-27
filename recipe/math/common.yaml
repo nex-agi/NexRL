@@ -78,6 +78,8 @@ rollout_worker:
   num_workers: 256
   need_llm_inference: true
   temperature: 1.0
+  top_p: 1.0
+  top_k: -1
   agent_cls: "single_turn_math"
 
   agent:
