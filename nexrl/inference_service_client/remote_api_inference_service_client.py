@@ -86,6 +86,13 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         reasoning_parser_type = config.inference_service.get("reasoning_parser", "think_tag")
         self._reasoning_parser = create_reasoning_parser(reasoning_parser_type)
 
+    def _sampling_defaults(self) -> dict[str, Any]:
+        return {
+            "temperature": self._config.get("temperature", 1.0),
+            "top_p": self._config.get("top_p", 1.0),
+            "top_k": self._config.get("top_k", -1),
+        }
+
     @abstractmethod
     def set_service_holder(self, service_holder) -> None:
         """
@@ -151,13 +158,15 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
             self._wait_for_weight_sync()
 
         max_tokens = self._config.inference_service.max_tokens
-        temperature = self._config.temperature
+        sampling_defaults = self._sampling_defaults()
 
         result = execute(
             self._service_holder.sample_from_prompt,
             prompt=prompt,
             max_tokens=max_tokens,
-            temperature=temperature,
+            temperature=sampling_defaults["temperature"],
+            top_p=sampling_defaults["top_p"],
+            top_k=sampling_defaults["top_k"],
             num_samples=1,
         )
 
@@ -210,7 +219,7 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
             self._wait_for_weight_sync()
 
         max_tokens = self._config.inference_service.max_tokens
-        temperature = self._config.temperature
+        sampling_defaults = self._sampling_defaults()
 
         # Extract tools from kwargs if present
         tools = kwargs.pop("tools", [])
@@ -219,7 +228,9 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
             self._service_holder.sample_from_messages,
             messages=messages,
             max_tokens=max_tokens,
-            temperature=temperature,
+            temperature=sampling_defaults["temperature"],
+            top_p=sampling_defaults["top_p"],
+            top_k=sampling_defaults["top_k"],
             num_samples=1,
             tools=tools,
         )
@@ -353,7 +364,10 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
         max_tokens = sampling_params.get(
             "max_new_tokens", self._config.inference_service.max_tokens
         )
-        temperature = sampling_params.get("temperature", self._config.temperature)
+        sampling_defaults = self._sampling_defaults()
+        temperature = sampling_params.get("temperature", sampling_defaults["temperature"])
+        top_p = sampling_params.get("top_p", sampling_defaults["top_p"])
+        top_k = sampling_params.get("top_k", sampling_defaults["top_k"])
         stop = sampling_params.get("stop", None)
 
         result = execute(
@@ -361,6 +375,8 @@ class RemoteApiInferenceServiceClient(InferenceServiceClient):
             input_ids=input_ids,
             max_tokens=max_tokens,
             temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
             num_samples=1,
             stop=stop,
         )

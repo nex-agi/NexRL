@@ -177,6 +177,8 @@ class WeaverServiceHolder:
         messages: list[dict[str, Any]],
         max_tokens: int,
         temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
         num_samples: int = 1,
         tools: list[dict[str, Any]] | None = None,
         stop: list[str] | None = None,
@@ -204,6 +206,8 @@ class WeaverServiceHolder:
         sampling_params = weaver_types.SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
             stop=stop or [],
         )
 
@@ -286,6 +290,8 @@ class WeaverServiceHolder:
         prompt: str,
         max_tokens: int,
         temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
         num_samples: int = 1,
         stop: list[str] | None = None,
     ) -> dict:
@@ -296,6 +302,8 @@ class WeaverServiceHolder:
         sampling_params = weaver_types.SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
             stop=stop or [],
         )
 
@@ -335,6 +343,8 @@ class WeaverServiceHolder:
         input_ids: list[int],
         max_tokens: int,
         temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
         num_samples: int = 1,
         stop: list[str] | None = None,
     ) -> dict:
@@ -348,6 +358,8 @@ class WeaverServiceHolder:
             input_ids: Pre-tokenized input token IDs
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
+            top_p: Nucleus sampling probability
+            top_k: Top-k sampling cutoff
             num_samples: Number of samples to generate
             stop: Optional stop strings
 
@@ -363,6 +375,8 @@ class WeaverServiceHolder:
         sampling_params = weaver_types.SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
             stop=stop or [],
         )
 
