@@ -16,9 +16,10 @@
 Tests for config_utils module
 """
 
+import pytest
 from omegaconf import OmegaConf
 
-from nexrl.utils.config_utils import insert_config
+from nexrl.utils.config_utils import get_train_service_config_by_role, insert_config
 
 
 def test_insert_config_simple():
@@ -55,3 +56,38 @@ def test_insert_config_struct_mode():
 
     assert OmegaConf.is_struct(target) is True
     assert target["new_key"]["x"] == 10
+
+
+def test_get_train_service_config_by_role_does_not_fallback_explicit_actor():
+    """A service with an explicit non-matching role must not satisfy another role."""
+    train_service = OmegaConf.create(
+        {
+            "main_actor": {
+                "identifier": "default",
+                "role": "actor",
+                "backend": "weaver",
+                "config": {"loss_fn": "ppo_clip"},
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="role 'ref_model' not found"):
+        get_train_service_config_by_role(train_service, "ref_model")
+
+
+def test_get_train_service_config_by_role_fallback_for_single_missing_role():
+    """Keep backward compatibility for one nested service that has no role."""
+    train_service = OmegaConf.create(
+        {
+            "main_actor": {
+                "identifier": "default",
+                "backend": "weaver",
+                "config": {"loss_fn": "ppo_clip"},
+            }
+        }
+    )
+
+    with pytest.warns(DeprecationWarning, match="missing 'role' field"):
+        actor_config = get_train_service_config_by_role(train_service, "actor")
+
+    assert actor_config.identifier == "default"
