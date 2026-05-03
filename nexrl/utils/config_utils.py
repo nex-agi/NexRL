@@ -134,8 +134,10 @@ def get_train_service_config_by_role(train_service: DictConfig, role: str) -> Di
         if isinstance(service_config, (dict, DictConfig)):
             if service_config.get("role") == role:
                 services_with_role.append((service_name, service_config))
-            elif "backend" in service_config or "url" in service_config:
-                # This looks like a service config without role
+            elif not service_config.get("role") and (
+                "backend" in service_config or "url" in service_config
+            ):
+                # This looks like a service config without role.
                 services_without_role.append((service_name, service_config))
 
     # If we found services with the matching role, return the first one
