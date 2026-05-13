@@ -69,6 +69,10 @@ spec:
                 - name: ENVIRONMENT_SETUP_SCRIPT
                   value: "{{environment_setup_script}}"
                 {% endif %}
+                - name: NEXRL_AUTO_INSTALL_WEAVER_SDK
+                  value: "{{auto_install_weaver_sdk}}"
+                - name: NEXRL_WEAVER_SDK_PACKAGE
+                  value: "{{weaver_sdk_package}}"
                 - name: DEBUG_HYDRA_OVERRIDES
                   value: "{{debug_hydra_overrides|default('')}}"
                 - name: IS_AGENT_WORKER
@@ -153,8 +157,18 @@ spec:
                   value: {{nexrl_path}}
                 - name: KUBERNETES_CONTAINER_RESOURCE_GPU
                   value: "0"
+                - name: TRAIN_CONFIG
+                  value: "{{train_config}}"
                 - name: EXPERIMENT_PATH
                   value: "{{experiment_path}}"
+                {% if environment_setup_script %}
+                - name: ENVIRONMENT_SETUP_SCRIPT
+                  value: "{{environment_setup_script}}"
+                {% endif %}
+                - name: NEXRL_AUTO_INSTALL_WEAVER_SDK
+                  value: "{{auto_install_weaver_sdk}}"
+                - name: NEXRL_WEAVER_SDK_PACKAGE
+                  value: "{{weaver_sdk_package}}"
                 - name: IS_AGENT_WORKER
                   value: "true"
                 - name: NUM_AGENTS_PER_WORKER

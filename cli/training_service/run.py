@@ -189,6 +189,37 @@ def load_environment_script(config: dict) -> str | None:
     return script_path
 
 
+def uses_weaver_backend(config: dict) -> bool:
+    service = config.get("service") or {}
+    if not isinstance(service, dict):
+        return False
+
+    inference_service = service.get("inference_service") or {}
+    if isinstance(inference_service, dict) and inference_service.get("backend") == "weaver":
+        return True
+
+    train_service = service.get("train_service") or {}
+    if isinstance(train_service, dict):
+        for service_config in train_service.values():
+            if isinstance(service_config, dict) and service_config.get("backend") == "weaver":
+                return True
+
+    weight = config.get("weight") or {}
+    if isinstance(weight, dict) and weight.get("sync_method") == "weaver":
+        return True
+
+    return False
+
+
+def resolve_weaver_sdk_install_config(config: dict) -> tuple[str, str]:
+    auto_install = os.getenv("NEXRL_AUTO_INSTALL_WEAVER_SDK")
+    if auto_install is None:
+        auto_install = "true" if uses_weaver_backend(config) else "false"
+
+    package = os.getenv("NEXRL_WEAVER_SDK_PACKAGE", "nex-weaver")
+    return auto_install, package
+
+
 # ============================================================================
 # Orchestration
 # ============================================================================
@@ -206,6 +237,8 @@ def launch_nexrl_driver(
     user_config: dict,
     user_secrets: dict,
     tag: str = "",
+    auto_install_weaver_sdk: str = "false",
+    weaver_sdk_package: str = "nex-weaver",
     debug_hydra_overrides: str = "",
 ) -> str:
     """Launch NexRL driver."""
@@ -248,6 +281,8 @@ def launch_nexrl_driver(
         tinker_base_url=tinker_base_url,
         weaver_api_key=weaver_api_key,
         weaver_base_url=weaver_base_url,
+        auto_install_weaver_sdk=auto_install_weaver_sdk,
+        weaver_sdk_package=weaver_sdk_package,
         debug_hydra_overrides=debug_hydra_overrides,
     )
 
@@ -366,6 +401,7 @@ def main():
     agent_resource = load_agent_settings(config)
     environment_setup_script = load_environment_script(config)
     served_model_name = load_model_name(config)
+    auto_install_weaver_sdk, weaver_sdk_package = resolve_weaver_sdk_install_config(config)
 
     num_agent_workers = agent_resource["num_workers"]
     num_agents_per_worker = agent_resource["agents_per_worker"]
@@ -398,6 +434,8 @@ def main():
         user_config,
         user_secrets,
         args.tag,
+        auto_install_weaver_sdk,
+        weaver_sdk_package,
         debug_overrides,
     )
 

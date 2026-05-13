@@ -127,6 +127,35 @@ run_environment_setup_script() {
     fi
 }
 
+install_weaver_sdk_if_requested() {
+    set -e
+    local enabled="${NEXRL_AUTO_INSTALL_WEAVER_SDK:-false}"
+    case "${enabled,,}" in
+        1|true|yes|on)
+            local package="${NEXRL_WEAVER_SDK_PACKAGE:-nex-weaver}"
+            echo "=========================================="
+            echo "Installing latest Weaver SDK"
+            echo "Package: ${package}"
+            echo "=========================================="
+            python -m pip install --no-cache-dir --upgrade "${package}"
+            python - <<'PY'
+from importlib import metadata
+
+try:
+    version = metadata.version("nex-weaver")
+except metadata.PackageNotFoundError:
+    version = "unknown"
+print(f"nex-weaver version: {version}")
+PY
+            echo "=========================================="
+            echo ""
+            ;;
+        *)
+            echo "Skipping Weaver SDK auto-install (NEXRL_AUTO_INSTALL_WEAVER_SDK=${enabled})"
+            ;;
+    esac
+}
+
 # Only execute main code if script is run directly (not sourced)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [ -z "$NEXRL_PATH" ]; then
@@ -147,6 +176,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 
     master_ip_file=${experiment_path}/ray_master_ip_file
 
+    run_environment_setup_script
+    install_weaver_sdk_if_requested
     wait_for_ray_nodes $nexrl_path $WORLD_SIZE $ROLE $master_ip_file $NUM_AGENTS_PER_WORKER
 
     echo ""

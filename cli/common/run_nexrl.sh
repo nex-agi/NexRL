@@ -54,6 +54,7 @@ master_ip_file=${experiment_path}/ray_master_ip_file
 
 wait_for_ray_nodes $nexrl_path $WORLD_SIZE $ROLE $master_ip_file $NUM_AGENTS_PER_WORKER
 run_environment_setup_script
+install_weaver_sdk_if_requested
 
 CONFIG_DIR="$(dirname "${TRAIN_CONFIG}")"
 CONFIG_BASENAME="$(basename "${TRAIN_CONFIG}")"
