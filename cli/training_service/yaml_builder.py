@@ -41,6 +41,8 @@ def render_driver_volcanojob(
     tinker_base_url: str | None = None,
     weaver_api_key: str | None = None,
     weaver_base_url: str | None = None,
+    auto_install_weaver_sdk: str = "false",
+    weaver_sdk_package: str = "nex-weaver",
     debug_hydra_overrides: str = "",
 ) -> str:
     """Render NexRL driver VolcanoJob YAML for training-service mode."""
@@ -73,6 +75,8 @@ def render_driver_volcanojob(
         tinker_base_url=tinker_base_url,
         weaver_api_key=weaver_api_key,
         weaver_base_url=weaver_base_url,
+        auto_install_weaver_sdk=auto_install_weaver_sdk,
+        weaver_sdk_package=weaver_sdk_package,
         debug_hydra_overrides=debug_hydra_overrides,
         minAvailable=1,
         globalMinAvailable=1 + num_agent_workers,
