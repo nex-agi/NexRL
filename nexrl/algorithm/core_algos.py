@@ -146,6 +146,10 @@ def compute_grpo_outcome_advantage(
     response_length = token_level_rewards.shape[-1]
     scores = token_level_rewards.sum(dim=-1)
 
+    def _group_key(value: Any) -> Any:
+        """Convert scalar tensor IDs to stable, value-based dictionary keys."""
+        return value.item() if hasattr(value, "item") else value
+
     id2score = defaultdict(list)
     id2run_id: defaultdict[Any, list[Any]] | None = (
         defaultdict(list) if run_ids is not None else None
@@ -156,9 +160,10 @@ def compute_grpo_outcome_advantage(
     with torch.no_grad():
         bsz = scores.shape[0]
         for i in range(bsz):
-            id2score[index[i]].append(scores[i])
+            idx = _group_key(index[i])
+            id2score[idx].append(scores[i])
             if run_ids is not None and id2run_id is not None:
-                id2run_id[index[i]].append(run_ids[i])
+                id2run_id[idx].append(run_ids[i])
 
         for idx in id2score:
             if len(id2score[idx]) == 1:
@@ -171,28 +176,30 @@ def compute_grpo_outcome_advantage(
                     # Group scores by run_id
                     run_id_to_scores = defaultdict(list)
                     for score, run_id in zip(id2score[idx], id2run_id[idx]):
-                        run_id_key = run_id.item() if hasattr(run_id, "item") else run_id
+                        run_id_key = _group_key(run_id)
                         run_id_to_scores[run_id_key].append(score)
                     # Compute mean per run_id, then mean of those means
                     per_run_means = [
-                        torch.stack(scores).mean() for scores in run_id_to_scores.values()
+                        torch.std_mean(torch.stack(run_scores), correction=0)[1]
+                        for run_scores in run_id_to_scores.values()
                     ]
                     per_run_means_tensor = torch.stack(per_run_means)
-                    id2mean[idx] = per_run_means_tensor.mean()
                     # Guard against single-element tensor: torch.std uses Bessel
                     # correction (N-1), which returns nan for N=1.
                     if len(per_run_means) <= 1:
+                        id2mean[idx] = per_run_means_tensor.mean()
                         id2std[idx] = torch.tensor(1.0, device=scores.device)
                     else:
-                        id2std[idx] = torch.std(per_run_means_tensor)
+                        # A joint reduction keeps constant float32 inputs centered exactly at
+                        # zero; separate mean/std reductions can round in different directions.
+                        id2std[idx], id2mean[idx] = torch.std_mean(per_run_means_tensor)
                 else:
-                    id2mean[idx] = torch.mean(score_tensor)
-                    id2std[idx] = torch.std(score_tensor)
+                    id2std[idx], id2mean[idx] = torch.std_mean(score_tensor)
             else:
                 raise ValueError(f"no score in prompt index: {idx}")
 
         for i in range(bsz):
-            idx = index[i]
+            idx = _group_key(index[i])
             scores[i] = (scores[i] - id2mean[idx]) / (id2std[idx] + epsilon)
 
         scores = scores.unsqueeze(-1).tile([1, response_length]) * eos_mask
@@ -238,17 +245,24 @@ def compute_grpo_advantage_for_trajectories(
                     run_id_to_rewards[run_id].append(reward)
                 # Compute mean per run_id, then mean of those means
                 per_run_means = [
-                    np.mean(run_rewards).item() for run_rewards in run_id_to_rewards.values()
+                    torch.std_mean(torch.tensor(run_rewards, dtype=torch.float32), correction=0)[1]
+                    for run_rewards in run_id_to_rewards.values()
                 ]
-                per_run_means_tensor = torch.tensor(per_run_means)
-                mean_reward = per_run_means_tensor.mean()
+                per_run_means_tensor = torch.stack(per_run_means)
                 if len(per_run_means) <= 1:
+                    mean_reward = per_run_means_tensor.mean()
                     std_reward = torch.tensor(1.0)
                 else:
-                    std_reward = torch.std(per_run_means_tensor)
+                    # Keep mean and std numerically consistent for constant float32 rewards
+                    # such as a GRPO group containing sixteen 0.1 scores.
+                    std_reward, mean_reward = torch.std_mean(per_run_means_tensor)
             else:
-                mean_reward = np.mean(rewards)
-                std_reward = np.std(rewards)
+                # Preserve the existing population-std semantics while computing both
+                # statistics in one stable reduction.
+                rewards_tensor = torch.tensor(rewards, dtype=torch.float64)
+                std_tensor, mean_tensor = torch.std_mean(rewards_tensor, correction=0)
+                mean_reward = mean_tensor.item()
+                std_reward = std_tensor.item()
             group_stats[group_id] = (mean_reward, std_reward)
     for i, traj in enumerate(trajectories):
         group_id = traj.get("group_id", str(i))
